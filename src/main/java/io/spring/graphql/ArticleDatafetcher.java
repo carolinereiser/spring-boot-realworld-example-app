@@ -15,19 +15,24 @@ import io.spring.application.CursorPageParameter;
 import io.spring.application.CursorPager;
 import io.spring.application.CursorPager.Direction;
 import io.spring.application.DateTimeCursor;
+import io.spring.application.Page;
 import io.spring.application.data.ArticleData;
 import io.spring.application.data.CommentData;
 import io.spring.core.user.User;
 import io.spring.core.user.UserRepository;
+import io.spring.graphql.DgsConstants.ARTICLE;
 import io.spring.graphql.DgsConstants.ARTICLEPAYLOAD;
 import io.spring.graphql.DgsConstants.COMMENT;
 import io.spring.graphql.DgsConstants.PROFILE;
 import io.spring.graphql.DgsConstants.QUERY;
+import io.spring.graphql.exception.AuthenticationException;
 import io.spring.graphql.types.Article;
 import io.spring.graphql.types.ArticleEdge;
 import io.spring.graphql.types.ArticlesConnection;
 import io.spring.graphql.types.Profile;
 import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.stream.Collectors;
 import lombok.AllArgsConstructor;
 import org.joda.time.format.ISODateTimeFormat;
@@ -101,18 +106,21 @@ public class ArticleDatafetcher {
         userRepository
             .findByUsername(profile.getUsername())
             .orElseThrow(ResourceNotFoundException::new);
+    User current = SecurityUtil.getCurrentUser().orElse(null);
 
     CursorPager<ArticleData> articles;
     if (first != null) {
       articles =
           articleQueryService.findUserFeedWithCursor(
               target,
-              new CursorPageParameter<>(DateTimeCursor.parse(after), first, Direction.NEXT));
+              new CursorPageParameter<>(DateTimeCursor.parse(after), first, Direction.NEXT),
+              current);
     } else {
       articles =
           articleQueryService.findUserFeedWithCursor(
               target,
-              new CursorPageParameter<>(DateTimeCursor.parse(before), last, Direction.PREV));
+              new CursorPageParameter<>(DateTimeCursor.parse(before), last, Direction.PREV),
+              current);
     }
     graphql.relay.PageInfo pageInfo = buildArticlePageInfo(articles);
     ArticlesConnection articlesConnection =
@@ -366,6 +374,29 @@ public class ArticleDatafetcher {
             : new DefaultConnectionCursor(articles.getEndCursor().toString()),
         articles.hasPrevious(),
         articles.hasNext());
+  }
+
+  @DgsQuery(field = QUERY.BookmarkedArticles)
+  public DataFetcherResult<List<Article>> bookmarkedArticles(
+      @InputArgument("offset") Integer offset, @InputArgument("limit") Integer limit) {
+    User current = SecurityUtil.getCurrentUser().orElseThrow(AuthenticationException::new);
+    List<ArticleData> articles =
+        articleQueryService
+            .findBookmarkedArticles(
+                current, new Page(offset == null ? 0 : offset, limit == null ? 20 : limit))
+            .getArticleDatas();
+    return DataFetcherResult.<List<Article>>newResult()
+        .data(articles.stream().map(this::buildArticleResult).collect(Collectors.toList()))
+        .localContext(articles.stream().collect(Collectors.toMap(ArticleData::getSlug, a -> a)))
+        .build();
+  }
+
+  @DgsData(parentType = ARTICLE.TYPE_NAME, field = ARTICLE.Bookmarked)
+  public boolean bookmarked(DataFetchingEnvironment dfe) {
+    User current = SecurityUtil.getCurrentUser().orElse(null);
+    Article article = dfe.getSource();
+    Map<String, ArticleData> articles = dfe.getLocalContext();
+    return articleQueryService.isBookmarked(articles.get(article.getSlug()).getId(), current);
   }
 
   private Article buildArticleResult(ArticleData articleData) {

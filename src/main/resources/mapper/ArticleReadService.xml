@@ -17,7 +17,7 @@
         A.created_at articleCreatedAt,
         A.updated_at articleUpdatedAt,
         T.name tagName,
-        <include refid="profileColumns"/>
+        <include refid="io.spring.infrastructure.mybatis.readservice.ArticleReadService.profileColumns"/>
         from
         articles A
         left join article_tags AT on A.id = AT.article_id

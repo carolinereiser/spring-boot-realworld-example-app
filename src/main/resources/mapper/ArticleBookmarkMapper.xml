@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd" >
+<mapper namespace="io.spring.infrastructure.mybatis.mapper.ArticleBookmarkMapper">
+    <insert id="insert">
+        insert into article_bookmarks (article_id, user_id) values (#{articleBookmark.articleId}, #{articleBookmark.userId})
+    </insert>
+    <delete id="delete">
+        delete from article_bookmarks where article_id = #{bookmark.articleId} and user_id = #{bookmark.userId}
+    </delete>
+    <select id="find" resultMap="articleBookmark">
+        select
+          AB.article_id articleBookmarkArticleId,
+          AB.user_id articleBookmarkUserId
+          from article_bookmarks AB
+          where AB.article_id = #{articleId} and AB.user_id = #{userId}
+    </select>
+    <resultMap id="articleBookmark" type="io.spring.core.bookmark.ArticleBookmark">
+        <result column="articleBookmarkArticleId" property="articleId"/>
+        <result column="articleBookmarkUserId" property="userId"/>
+    </resultMap>
+</mapper>
