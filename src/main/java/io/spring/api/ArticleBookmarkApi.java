@@ -19,19 +19,17 @@ import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 @RestController
-@RequestMapping(path = "/articles")
 @AllArgsConstructor
 public class ArticleBookmarkApi {
   private ArticleBookmarkRepository articleBookmarkRepository;
   private ArticleRepository articleRepository;
   private ArticleQueryService articleQueryService;
 
-  @PostMapping(path = "{slug}/bookmark")
+  @PostMapping(path = "/articles/{slug}/bookmark")
   public ResponseEntity<Map<String, ArticleData>> bookmarkArticle(
       @PathVariable("slug") String slug, @AuthenticationPrincipal User user) {
     Article article =
@@ -40,7 +38,7 @@ public class ArticleBookmarkApi {
     return responseArticleData(articleQueryService.findBySlug(slug, user).get());
   }
 
-  @DeleteMapping(path = "{slug}/bookmark")
+  @DeleteMapping(path = "/articles/{slug}/bookmark")
   public ResponseEntity<Map<String, ArticleData>> unbookmarkArticle(
       @PathVariable("slug") String slug, @AuthenticationPrincipal User user) {
     Article article =
@@ -51,7 +49,7 @@ public class ArticleBookmarkApi {
     return responseArticleData(articleQueryService.findBySlug(slug, user).get());
   }
 
-  @GetMapping(path = "bookmarked")
+  @GetMapping(path = "/user/bookmarks")
   public ResponseEntity<ArticleDataList> getBookmarkedArticles(
       @RequestParam(value = "offset", defaultValue = "0") int offset,
       @RequestParam(value = "limit", defaultValue = "20") int limit,

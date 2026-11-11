@@ -14,6 +14,7 @@ import io.spring.TestHelper;
 import io.spring.api.security.WebSecurityConfig;
 import io.spring.application.ArticleQueryService;
 import io.spring.application.Page;
+import io.spring.application.article.ArticleCommandService;
 import io.spring.application.data.ArticleData;
 import io.spring.application.data.ArticleDataList;
 import io.spring.core.article.Article;
@@ -32,13 +33,14 @@ import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.context.annotation.Import;
 import org.springframework.test.web.servlet.MockMvc;
 
-@WebMvcTest(ArticleBookmarkApi.class)
+@WebMvcTest({ArticleBookmarkApi.class, ArticleApi.class})
 @Import({WebSecurityConfig.class, JacksonCustomizations.class})
 public class ArticleBookmarkApiTest extends TestWithCurrentUser {
   @Autowired private MockMvc mvc;
   @MockBean private ArticleBookmarkRepository articleBookmarkRepository;
   @MockBean private ArticleRepository articleRepository;
   @MockBean private ArticleQueryService articleQueryService;
+  @MockBean private ArticleCommandService articleCommandService;
   private Article article;
   private ArticleData articleData;
 
@@ -122,7 +124,7 @@ public class ArticleBookmarkApiTest extends TestWithCurrentUser {
         .param("offset", 2)
         .param("limit", 5)
         .when()
-        .get("/articles/bookmarked")
+        .get("/user/bookmarks")
         .then()
         .statusCode(200)
         .body("articlesCount", equalTo(3))
@@ -144,7 +146,7 @@ public class ArticleBookmarkApiTest extends TestWithCurrentUser {
     given()
         .header("Authorization", "Token " + token)
         .when()
-        .get("/articles/bookmarked")
+        .get("/user/bookmarks")
         .then()
         .statusCode(200)
         .body("articlesCount", equalTo(1));
@@ -154,7 +156,7 @@ public class ArticleBookmarkApiTest extends TestWithCurrentUser {
         .param("userId", user.getId())
         .param("bookmarked", user.getUsername())
         .when()
-        .get("/articles/bookmarked")
+        .get("/user/bookmarks")
         .then()
         .statusCode(200)
         .body("articlesCount", equalTo(0))
@@ -164,11 +166,50 @@ public class ArticleBookmarkApiTest extends TestWithCurrentUser {
 
   @Test
   public void should_require_authentication_for_all_bookmark_endpoints() {
-    given().when().get("/articles/bookmarked").then().statusCode(401);
+    given().when().get("/user/bookmarks").then().statusCode(401);
+    given().when().get("/user/bookmarks/").then().statusCode(401);
     given().when().post("/articles/{slug}/bookmark", article.getSlug()).then().statusCode(401);
     given().when().delete("/articles/{slug}/bookmark", article.getSlug()).then().statusCode(401);
     verify(articleQueryService, never()).findBookmarkedArticles(any(), any());
     verify(articleBookmarkRepository, never()).save(any());
     verify(articleBookmarkRepository, never()).remove(any());
+  }
+
+  @Test
+  public void should_list_own_bookmarks_with_trailing_slash() {
+    articleData.setBookmarked(true);
+    when(articleQueryService.findBookmarkedArticles(eq(user), any()))
+        .thenReturn(new ArticleDataList(Collections.singletonList(articleData), 1));
+    given()
+        .header("Authorization", "Token " + token)
+        .when()
+        .get("/user/bookmarks/")
+        .then()
+        .statusCode(200)
+        .body("articlesCount", equalTo(1))
+        .body("articles[0].id", equalTo(article.getId()));
+    verify(articleQueryService).findBookmarkedArticles(user, new Page());
+  }
+
+  @Test
+  public void should_keep_bookmarked_article_slug_publicly_accessible() {
+    Article bookmarkedArticle =
+        new Article("Bookmarked", "desc", "body", Collections.emptyList(), user.getId());
+    ArticleData data = TestHelper.getArticleDataFromArticleAndUser(bookmarkedArticle, user);
+    when(articleQueryService.findBySlug(eq("bookmarked"), any())).thenReturn(Optional.of(data));
+    given()
+        .when()
+        .get("/articles/bookmarked")
+        .then()
+        .statusCode(200)
+        .body("article.slug", equalTo("bookmarked"));
+    given()
+        .header("Authorization", "Token " + token)
+        .when()
+        .get("/articles/bookmarked")
+        .then()
+        .statusCode(200)
+        .body("article.slug", equalTo("bookmarked"));
+    verify(articleQueryService, never()).findBookmarkedArticles(any(), any());
   }
 }
