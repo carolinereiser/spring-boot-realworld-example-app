@@ -6,6 +6,7 @@ import io.spring.application.data.ArticleData;
 import io.spring.application.data.ArticleDataList;
 import io.spring.application.data.ArticleFavoriteCount;
 import io.spring.core.user.User;
+import io.spring.infrastructure.mybatis.readservice.ArticleBookmarksReadService;
 import io.spring.infrastructure.mybatis.readservice.ArticleFavoritesReadService;
 import io.spring.infrastructure.mybatis.readservice.ArticleReadService;
 import io.spring.infrastructure.mybatis.readservice.UserRelationshipQueryService;
@@ -14,6 +15,7 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import lombok.AllArgsConstructor;
@@ -26,12 +28,14 @@ public class ArticleQueryService {
   private ArticleReadService articleReadService;
   private UserRelationshipQueryService userRelationshipQueryService;
   private ArticleFavoritesReadService articleFavoritesReadService;
+  private ArticleBookmarksReadService articleBookmarksReadService;
 
   public Optional<ArticleData> findById(String id, User user) {
     ArticleData articleData = articleReadService.findById(id);
     if (articleData == null) {
       return Optional.empty();
     } else {
+      articleData.setBookmarked(isBookmarked(id, user));
       if (user != null) {
         fillExtraInfo(id, user, articleData);
       }
@@ -44,6 +48,7 @@ public class ArticleQueryService {
     if (articleData == null) {
       return Optional.empty();
     } else {
+      articleData.setBookmarked(isBookmarked(articleData.getId(), user));
       if (user != null) {
         fillExtraInfo(articleData.getId(), user, articleData);
       }
@@ -79,6 +84,11 @@ public class ArticleQueryService {
 
   public CursorPager<ArticleData> findUserFeedWithCursor(
       User user, CursorPageParameter<DateTime> page) {
+    return findUserFeedWithCursor(user, page, user);
+  }
+
+  public CursorPager<ArticleData> findUserFeedWithCursor(
+      User user, CursorPageParameter<DateTime> page, User currentUser) {
     List<String> followdUsers = userRelationshipQueryService.followedUsers(user.getId());
     if (followdUsers.size() == 0) {
       return new CursorPager<>(new ArrayList<>(), page.getDirection(), false);
@@ -92,7 +102,7 @@ public class ArticleQueryService {
       if (!page.isNext()) {
         Collections.reverse(articles);
       }
-      fillExtraInfo(articles, user);
+      fillExtraInfo(articles, currentUser);
       return new CursorPager<>(articles, page.getDirection(), hasExtra);
     }
   }
@@ -123,7 +133,11 @@ public class ArticleQueryService {
   }
 
   private void fillExtraInfo(List<ArticleData> articles, User currentUser) {
+    if (articles.isEmpty()) {
+      return;
+    }
     setFavoriteCount(articles);
+    setIsBookmarked(articles, currentUser);
     if (currentUser != null) {
       setIsFavorite(articles, currentUser);
       setIsFollowingAuthor(articles, currentUser);
@@ -180,5 +194,28 @@ public class ArticleQueryService {
         .setFollowing(
             userRelationshipQueryService.isUserFollowing(
                 user.getId(), articleData.getProfileData().getId()));
+  }
+
+  public ArticleDataList findBookmarkedArticles(User currentUser, Page page) {
+    Objects.requireNonNull(currentUser);
+    List<ArticleData> articles =
+        articleBookmarksReadService.findBookmarkedArticles(currentUser, page);
+    fillExtraInfo(articles, currentUser);
+    return new ArticleDataList(
+        articles, articleBookmarksReadService.countUserBookmarks(currentUser));
+  }
+
+  public boolean isBookmarked(String articleId, User currentUser) {
+    return currentUser != null
+        && articleBookmarksReadService.isUserBookmarked(currentUser.getId(), articleId);
+  }
+
+  private void setIsBookmarked(List<ArticleData> articles, User currentUser) {
+    Set<String> bookmarkedArticles =
+        currentUser == null
+            ? Collections.emptySet()
+            : articleBookmarksReadService.userBookmarks(currentUser.getId());
+    articles.forEach(
+        articleData -> articleData.setBookmarked(bookmarkedArticles.contains(articleData.getId())));
   }
 }

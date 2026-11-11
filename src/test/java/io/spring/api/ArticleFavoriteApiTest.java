@@ -58,6 +58,7 @@ public class ArticleFavoriteApiTest extends TestWithCurrentUser {
             article.getDescription(),
             article.getBody(),
             true,
+            false,
             1,
             article.getCreatedAt(),
             article.getUpdatedAt(),

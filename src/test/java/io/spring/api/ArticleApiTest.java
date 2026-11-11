@@ -140,6 +140,7 @@ public class ArticleApiTest extends TestWithCurrentUser {
             article.getDescription(),
             article.getBody(),
             false,
+            false,
             0,
             time,
             time,
