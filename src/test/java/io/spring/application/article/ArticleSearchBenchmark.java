@@ -10,7 +10,9 @@ import java.nio.file.Path;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.Statement;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.List;
 import java.util.UUID;
 import javax.sql.DataSource;
 import org.joda.time.DateTime;
@@ -36,6 +38,7 @@ class ArticleSearchBenchmark {
 
   @Autowired private DataSource dataSource;
   @Autowired private ArticleQueryService queryService;
+  private final List<String> slowQueries = new ArrayList<>();
 
   @DynamicPropertySource
   static void database(DynamicPropertyRegistry registry) {
@@ -98,6 +101,7 @@ class ArticleSearchBenchmark {
                             null)
                         .getData())
                 .hasSize(20));
+    assertThat(slowQueries).as("scenarios exceeding 200ms p95").isEmpty();
   }
 
   private void offset(
@@ -126,7 +130,9 @@ class ArticleSearchBenchmark {
     System.out.printf(
         "BENCHMARK %-36s first=%8.2f p50=%8.2f p95=%8.2f max=%8.2f ms%n",
         name, first, milliseconds[SAMPLES / 2], p95, milliseconds[SAMPLES - 1]);
-    assertThat(p95).as("%s p95 latency (ms)", name).isLessThan(200.0);
+    if (p95 >= 200.0) {
+      slowQueries.add(name + ": " + p95 + "ms");
+    }
   }
 
   private void seed() throws Exception {

@@ -9,13 +9,21 @@
     </sql>
     <sql id="articleFilters">
         <if test="tag != null">
-            AND T.name = #{tag}
+            AND EXISTS (
+                select 1 from article_tags AT
+                join tags T on T.id = AT.tag_id
+                where AT.article_id = A.id and T.name = #{tag}
+            )
         </if>
         <if test="author != null">
-            AND AU.username = #{author}
+            AND A.user_id = (select id from users where username = #{author})
         </if>
         <if test="favoritedBy != null">
-            AND AFU.username = #{favoritedBy}
+            AND EXISTS (
+                select 1 from article_favorites AF
+                where AF.article_id = A.id
+                and AF.user_id = (select id from users where username = #{favoritedBy})
+            )
         </if>
         <if test="keyword != null">
             AND articles_fts MATCH #{keyword}
@@ -45,15 +53,10 @@
     </sql>
     <sql id="selectArticleIds">
         select
-        DISTINCT(A.id) articleId, A.created_at
+        A.id articleId, A.created_at
         from
         articles A
         <include refid="articleSearchJoin"/>
-        left join article_tags AT on A.id = AT.article_id
-        left join tags T on T.id = AT.tag_id
-        left join article_favorites AF on AF.article_id = A.id
-        left join users AU on AU.id = A.user_id
-        left join users AFU on AFU.id = AF.user_id
     </sql>
 
     <select id="findById" resultMap="transfer.data.articleData">
@@ -68,28 +71,31 @@
         <include refid="selectArticleIds" />
         <where>
             <include refid="articleFilters"/>
+            <if test="keyword != null">
+                AND articles_fts.rank MATCH 'bm25(10.0, 5.0, 1.0)'
+            </if>
         </where>
         order by
-        <if test="keyword != null">
-            bm25(articles_fts, 10.0, 5.0, 1.0),
-        </if>
-        A.created_at desc, A.id
+        <choose>
+            <when test="keyword != null">articles_fts.rank</when>
+            <otherwise>A.created_at desc, A.id</otherwise>
+        </choose>
         limit #{page.offset}, #{page.limit}
     </select>
     <select id="countArticle" resultType="java.lang.Integer">
-        select
-        count(DISTINCT A.id)
-        from
-        articles A
-        <include refid="articleSearchJoin"/>
-        left join article_tags AT on A.id = AT.article_id
-        left join tags T on T.id = AT.tag_id
-        left join article_favorites AF on AF.article_id = A.id
-        left join users AU on AU.id = A.user_id
-        left join users AFU on AFU.id = AF.user_id
-        <where>
-            <include refid="articleFilters"/>
-        </where>
+        <choose>
+            <when test="keyword != null and tag == null and author == null and favoritedBy == null">
+                select count(1) from articles_fts where articles_fts MATCH #{keyword}
+            </when>
+            <otherwise>
+                select count(1)
+                from articles A
+                <include refid="articleSearchJoin"/>
+                <where>
+                    <include refid="articleFilters"/>
+                </where>
+            </otherwise>
+        </choose>
     </select>
     <select id="findArticles" resultMap="transfer.data.articleData">
         <include refid="selectArticleData"/>

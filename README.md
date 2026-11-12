@@ -51,6 +51,11 @@ SQLite JDBC driver supports FTS5; no external service is needed. Flyway V2 rebui
 for existing articles and installs insert/update/delete triggers. The external-content index
 uses SQLite's integer `rowid`, not the article's UUID. Index changes participate in the article
 write transaction, including rollback.
+V3 adds a covering index on article-tag relations for filtering and DTO hydration. Candidate/count
+queries use existence predicates rather than unconditional tag/favorite joins, avoiding row
+multiplication and expensive DISTINCT operations.
+Connections allow up to 256 MiB of SQLite memory-mapped reads (`PRAGMA mmap_size=268435456`),
+reducing copies during large index scans; this is a mapping limit, not an upfront memory allocation.
 
 Keywords are case-insensitive under FTS5's default `unicode61` tokenizer. Whitespace-separated
 terms are ANDed; each is quoted/escaped as literal text, so operators, wildcards, and column
@@ -58,11 +63,14 @@ selectors are not exposed as query syntax. Punctuation is handled by the tokeniz
 as `spring-boot` becomes a phrase). Empty/whitespace-only input means no search filter; a
 punctuation-only search returns no matches. There is no substring matching or stemming.
 
-Offset search orders all matches by `bm25(articles_fts, 10.0, 5.0, 1.0)` ascending (lower is better),
-then `created_at DESC, id` for ties, **before** applying offset/limit. Title, description, and body
-have weights 10, 5, and 1; BM25 also considers term frequency and document length. The hydration
-step preserves that ranked ID order. `articlesCount` counts all matches after applying keyword,
-tag, author, and favorited filters, independent of the requested page.
+Offset search orders all matches by weighted BM25 ascending (lower is better), **before** applying
+offset/limit. `articles_fts.rank MATCH 'bm25(10.0, 5.0, 1.0)'` maps FTS5's hidden `rank` column to
+`bm25(articles_fts, 10.0, 5.0, 1.0)`. Ordering by `rank` lets FTS5 retrieve top matches natively
+instead of hydrating every matching article to sort it. Equal-score matches use FTS index order,
+not chronological order. Title, description, and body have weights 10, 5, and 1; BM25 also considers
+term frequency and document length. The hydration step preserves ranked ID order. `articlesCount`
+counts all matches after keyword, tag, author, and favorited filters, independently of the page;
+unfiltered keyword counts read the FTS index without loading article contents.
 
 The service's keyword-aware cursor overload applies the same MATCH/filter predicates but keeps
 the existing timestamp ordering: newest first, using strict `<`/`>` timestamp boundaries for
@@ -100,6 +108,32 @@ Scenarios cover rare/medium/broad and multi-term keywords, keyword combined sepa
 author, or favorite, offset 1,000, no matches, and NEXT/PREV cursor queries at the dataset midpoint.
 Gradle writes the detailed output to `build/test-results/articleSearchBenchmark/` and the HTML
 report to `build/reports/tests/articleSearchBenchmark/`.
+
+#### Measured results
+
+Session VM: Ubuntu/Linux 6.8, 8 vCPUs (Intel Xeon), 32 GB RAM, Java 11.0.33, SQLite 3.36.0
+via sqlite-jdbc 3.36.0.3. Default application connection settings, including the 256 MiB mmap
+limit above; no benchmark-only database tuning. All 11 scenarios passed the 200 ms p95 threshold.
+Latency in milliseconds:
+
+| Scenario | First call | p50 | p95 | Max of 50 |
+| --- | ---: | ---: | ---: | ---: |
+| Rare keyword, 100 matches | 78.03 | 2.14 | 3.22 | 3.50 |
+| Medium keyword, 10K matches | 12.20 | 11.30 | 11.88 | 12.12 |
+| Broad keyword, 100K matches | 130.05 | 103.40 | 126.28 | 137.81 |
+| Multiple keywords | 1.88 | 1.56 | 1.74 | 10.18 |
+| Keyword + tag | 27.35 | 19.63 | 23.41 | 26.23 |
+| Keyword + author | 13.26 | 11.78 | 13.86 | 16.81 |
+| Keyword + favorite | 16.20 | 15.93 | 16.35 | 17.21 |
+| Offset 1,000 | 10.01 | 9.60 | 11.87 | 13.85 |
+| No match | 0.35 | 0.10 | 0.14 | 0.81 |
+| Cursor NEXT | 13.15 | 4.24 | 5.96 | 6.05 |
+| Cursor PREV | 3.62 | 3.51 | 4.02 | 4.78 |
+
+The initial unindexed-join implementation exceeded 3 seconds p95 even for rare matches.
+The covering tag-relation index, existence predicates, index-only keyword count, native FTS rank
+ordering, and production mmap setting are important to the measured performance. These are
+single-reader, warm-cache results, not a claim about concurrent production traffic or cold disks.
 
 # Getting started
 
