@@ -15,6 +15,7 @@ import io.spring.application.CursorPageParameter;
 import io.spring.application.CursorPager;
 import io.spring.application.CursorPager.Direction;
 import io.spring.application.DateTimeCursor;
+import io.spring.application.FavoriteCursor;
 import io.spring.application.data.ArticleData;
 import io.spring.application.data.CommentData;
 import io.spring.core.user.User;
@@ -156,7 +157,7 @@ public class ArticleDatafetcher {
               null,
               null,
               profile.getUsername(),
-              new CursorPageParameter<>(DateTimeCursor.parse(after), first, Direction.NEXT),
+              new CursorPageParameter<>(FavoriteCursor.parseFavorite(after), first, Direction.NEXT),
               current);
     } else {
       articles =
@@ -164,7 +165,7 @@ public class ArticleDatafetcher {
               null,
               null,
               profile.getUsername(),
-              new CursorPageParameter<>(DateTimeCursor.parse(before), last, Direction.PREV),
+              new CursorPageParameter<>(FavoriteCursor.parseFavorite(before), last, Direction.PREV),
               current);
     }
     graphql.relay.PageInfo pageInfo = buildArticlePageInfo(articles);
@@ -265,7 +266,12 @@ public class ArticleDatafetcher {
               withTag,
               authoredBy,
               favoritedBy,
-              new CursorPageParameter<>(DateTimeCursor.parse(after), first, Direction.NEXT),
+              new CursorPageParameter<>(
+                  favoritedBy != null
+                      ? FavoriteCursor.parseFavorite(after)
+                      : DateTimeCursor.parse(after),
+                  first,
+                  Direction.NEXT),
               current);
     } else {
       articles =
@@ -273,7 +279,12 @@ public class ArticleDatafetcher {
               withTag,
               authoredBy,
               favoritedBy,
-              new CursorPageParameter<>(DateTimeCursor.parse(before), last, Direction.PREV),
+              new CursorPageParameter<>(
+                  favoritedBy != null
+                      ? FavoriteCursor.parseFavorite(before)
+                      : DateTimeCursor.parse(before),
+                  last,
+                  Direction.PREV),
               current);
     }
     graphql.relay.PageInfo pageInfo = buildArticlePageInfo(articles);

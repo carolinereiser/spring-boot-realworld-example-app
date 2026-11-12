@@ -27,6 +27,9 @@
     <sql id="selectArticleIds">
         select
         DISTINCT(A.id) articleId, A.created_at
+        <if test="favoritedBy != null">
+            , AF.favorited_at favoritedAt
+        </if>
         from
         articles A
         left join article_tags AT on A.id = AT.article_id
@@ -57,7 +60,14 @@
                 AND AFU.username = #{favoritedBy}
             </if>
         </where>
-        order by A.created_at desc
+        <choose>
+            <when test="favoritedBy != null">
+                order by AF.favorited_at desc nulls last, A.id desc
+            </when>
+            <otherwise>
+                order by A.created_at desc
+            </otherwise>
+        </choose>
         limit #{page.offset}, #{page.limit}
     </select>
     <select id="countArticle" resultType="java.lang.Integer">
@@ -104,7 +114,7 @@
             #{id}
         </foreach>
     </select>
-    <select id="findArticlesWithCursor" resultType="java.lang.String">
+    <select id="findArticlesWithCursor" resultMap="articleCursorData">
         <include refid="selectArticleIds" />
         <where>
             <if test="tag != null">
@@ -116,19 +126,74 @@
             <if test="favoritedBy != null">
                 AND AFU.username = #{favoritedBy}
             </if>
-            <if test='page.cursor != null and page.direction.name() == "NEXT"'>
-                AND A.created_at &lt; #{page.cursor}
-            </if>
-            <if test='page.cursor != null and page.direction.name() == "PREV"'>
-                AND A.created_at > #{page.cursor}
-            </if>
+            <choose>
+                <when test="favoritedBy != null">
+                    <if test="page.cursor != null">
+                        <choose>
+                            <when test="page.cursor.favoritedAt != null">
+                                <choose>
+                                    <when test="page.next">
+                                        AND (AF.favorited_at &lt; #{page.cursor.favoritedAt}
+                                            OR AF.favorited_at IS NULL
+                                            <if test="page.cursor.articleId != null">
+                                                OR (AF.favorited_at = #{page.cursor.favoritedAt}
+                                                    AND A.id &lt; #{page.cursor.articleId})
+                                            </if>)
+                                    </when>
+                                    <otherwise>
+                                        AND (AF.favorited_at > #{page.cursor.favoritedAt}
+                                            <if test="page.cursor.articleId != null">
+                                                OR (AF.favorited_at = #{page.cursor.favoritedAt}
+                                                    AND A.id > #{page.cursor.articleId})
+                                            </if>)
+                                    </otherwise>
+                                </choose>
+                            </when>
+                            <otherwise>
+                                <choose>
+                                    <when test="page.next">
+                                        AND AF.favorited_at IS NULL
+                                        AND A.id &lt; #{page.cursor.articleId}
+                                    </when>
+                                    <otherwise>
+                                        AND (AF.favorited_at IS NOT NULL
+                                            OR (AF.favorited_at IS NULL AND A.id > #{page.cursor.articleId}))
+                                    </otherwise>
+                                </choose>
+                            </otherwise>
+                        </choose>
+                    </if>
+                </when>
+                <otherwise>
+                    <if test='page.cursor != null and page.direction.name() == "NEXT"'>
+                        AND A.created_at &lt; #{page.cursor}
+                    </if>
+                    <if test='page.cursor != null and page.direction.name() == "PREV"'>
+                        AND A.created_at > #{page.cursor}
+                    </if>
+                </otherwise>
+            </choose>
         </where>
-        <if test='page.direction.name() == "NEXT"'>
-            order by A.created_at desc
-        </if>
-        <if test='page.direction.name() == "PREV"'>
-            order by A.created_at asc
-        </if>
+        <choose>
+            <when test="favoritedBy != null">
+                <choose>
+                    <when test="page.next">
+                        order by AF.favorited_at desc nulls last, A.id desc
+                    </when>
+                    <otherwise>
+                        order by AF.favorited_at asc nulls first, A.id asc
+                    </otherwise>
+                </choose>
+            </when>
+            <otherwise>
+                <if test='page.direction.name() == "NEXT"'>
+                    order by A.created_at desc
+                </if>
+                <if test='page.direction.name() == "PREV"'>
+                    order by A.created_at asc
+                </if>
+            </otherwise>
+        </choose>
         limit #{page.queryLimit}
     </select>
     <select id="findArticlesOfAuthorsWithCursor" resultMap="transfer.data.articleData">
@@ -156,5 +221,9 @@
 
     <resultMap id="articleId" type="string">
         <id javaType="string" column="articleId"/>
+    </resultMap>
+    <resultMap id="articleCursorData" type="io.spring.application.data.ArticleCursorData">
+        <id column="articleId" property="id"/>
+        <result column="favoritedAt" property="favoritedAt"/>
     </resultMap>
 </mapper>
