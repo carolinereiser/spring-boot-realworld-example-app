@@ -1,15 +1,16 @@
 package io.spring.application;
 
 import java.nio.ByteBuffer;
+import java.nio.charset.CharacterCodingException;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.Base64;
-import java.util.UUID;
 import lombok.Value;
 
 public class ArticleSearchCursor extends PageCursor<ArticleSearchCursor.Position> {
-  private static final String PREFIX = "search-v2.";
+  private static final String PREFIX = "search-v3.";
+  private static final int MAX_TOKEN_LENGTH = 16_384;
 
   public ArticleSearchCursor(int priority, double score, String articleId, String queryKey) {
     super(new Position(priority, score, articleId, queryKey));
@@ -17,9 +18,10 @@ public class ArticleSearchCursor extends PageCursor<ArticleSearchCursor.Position
         || priority > 2
         || !Double.isFinite(score)
         || articleId == null
-        || !UUID.fromString(articleId).toString().equals(articleId)
+        || !StandardCharsets.UTF_8.newEncoder().canEncode(articleId)
         || queryKey == null
-        || !queryKey.matches("[A-Za-z0-9_-]{43}")) {
+        || !queryKey.matches("[A-Za-z0-9_-]{43}")
+        || encode(getData()).length() > MAX_TOKEN_LENGTH) {
       throw new IllegalArgumentException("Invalid article search cursor");
     }
   }
@@ -44,18 +46,20 @@ public class ArticleSearchCursor extends PageCursor<ArticleSearchCursor.Position
 
   @Override
   public String toString() {
+    return encode(getData());
+  }
+
+  private static String encode(Position position) {
+    Base64.Encoder encoder = Base64.getUrlEncoder().withoutPadding();
     String payload =
-        getPriority()
+        position.getPriority()
             + "\n"
-            + Double.toHexString(getScore())
+            + Double.toHexString(position.getScore())
             + "\n"
-            + getArticleId()
+            + encoder.encodeToString(position.getArticleId().getBytes(StandardCharsets.UTF_8))
             + "\n"
-            + getData().getQueryKey();
-    return PREFIX
-        + Base64.getUrlEncoder()
-            .withoutPadding()
-            .encodeToString(payload.getBytes(StandardCharsets.UTF_8));
+            + position.getQueryKey();
+    return PREFIX + encoder.encodeToString(payload.getBytes(StandardCharsets.UTF_8));
   }
 
   public static ArticleSearchCursor parse(String token) {
@@ -63,7 +67,7 @@ public class ArticleSearchCursor extends PageCursor<ArticleSearchCursor.Position
       return null;
     }
     try {
-      if (!token.startsWith(PREFIX) || token.length() > 512) {
+      if (!token.startsWith(PREFIX) || token.length() > MAX_TOKEN_LENGTH) {
         throw new IllegalArgumentException();
       }
       String payload =
@@ -74,9 +78,14 @@ public class ArticleSearchCursor extends PageCursor<ArticleSearchCursor.Position
       if (parts.length != 4) {
         throw new IllegalArgumentException();
       }
+      String articleId =
+          StandardCharsets.UTF_8
+              .newDecoder()
+              .decode(ByteBuffer.wrap(Base64.getUrlDecoder().decode(parts[2])))
+              .toString();
       return new ArticleSearchCursor(
-          Integer.parseInt(parts[0]), Double.parseDouble(parts[1]), parts[2], parts[3]);
-    } catch (IllegalArgumentException exception) {
+          Integer.parseInt(parts[0]), Double.parseDouble(parts[1]), articleId, parts[3]);
+    } catch (IllegalArgumentException | CharacterCodingException exception) {
       throw new IllegalArgumentException("Invalid article search cursor", exception);
     }
   }

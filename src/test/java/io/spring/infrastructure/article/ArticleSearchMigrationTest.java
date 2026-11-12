@@ -2,6 +2,7 @@ package io.spring.infrastructure.article;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import io.spring.application.ArticleSearchCursor;
 import java.nio.file.Path;
 import java.sql.Connection;
 import java.sql.DriverManager;
@@ -15,7 +16,8 @@ class ArticleSearchMigrationTest {
   @TempDir Path directory;
 
   @Test
-  void should_backfill_existing_uuid_articles_and_keep_index_transactional() throws Exception {
+  void should_backfill_legacy_article_ids_support_cursors_and_keep_index_transactional()
+      throws Exception {
     String url = "jdbc:sqlite:" + directory.resolve("migration.db");
     Flyway.configure().dataSource(url, "", "").target("1").load().migrate();
     try (Connection connection = DriverManager.getConnection(url);
@@ -47,11 +49,20 @@ class ArticleSearchMigrationTest {
   private String matchingId(Statement statement, String term) throws Exception {
     try (ResultSet result =
         statement.executeQuery(
-            "SELECT A.id FROM articles A "
+            "SELECT A.id, bm25(articles_fts, 10.0, 5.0, 1.0) FROM articles A "
                 + "JOIN articles_fts ON articles_fts.rowid = A.rowid WHERE articles_fts MATCH '"
                 + term
                 + "'")) {
-      return result.next() ? result.getString(1) : null;
+      if (!result.next()) {
+        return null;
+      }
+      ArticleSearchCursor cursor =
+          new ArticleSearchCursor(
+              0,
+              result.getDouble(2),
+              result.getString(1),
+              ArticleSearchCursor.queryKey(null, null, null, "\"" + term + "\""));
+      return ArticleSearchCursor.parse(cursor.toString()).getArticleId();
     }
   }
 }

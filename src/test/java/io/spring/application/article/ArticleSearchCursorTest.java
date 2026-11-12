@@ -12,6 +12,8 @@ import org.junit.jupiter.api.Test;
 class ArticleSearchCursorTest {
   private static final String ID = "00000000-0000-0000-0000-000000000001";
   private static final String QUERY = ArticleSearchCursor.queryKey(null, null, null, "\"quartz\"");
+  private static final String ENCODED_ID =
+      Base64.getUrlEncoder().withoutPadding().encodeToString(ID.getBytes(StandardCharsets.UTF_8));
 
   @Test
   void should_round_trip_exact_score_bits_and_query_binding() {
@@ -35,17 +37,45 @@ class ArticleSearchCursorTest {
             "",
             "123456789",
             "search-v1.abc",
-            "search-v3.abc",
-            "search-v2.!",
-            "search-v2." + "a".repeat(513),
-            token("0\nNaN\n" + ID + "\n" + QUERY),
-            token("0\nInfinity\n" + ID + "\n" + QUERY),
-            token("3\n-1.0\n" + ID + "\n" + QUERY),
-            token("-1\n-1.0\n" + ID + "\n" + QUERY),
-            token("0\n-1.0\nnot-a-uuid\n" + QUERY),
-            token("0\n-1.0\n" + ID + "\ninvalid"),
+            "search-v2.abc",
+            "search-v4.abc",
+            "search-v3.!",
+            "search-v3." + "a".repeat(16_385),
+            token("0\nNaN\n" + ENCODED_ID + "\n" + QUERY),
+            token("0\nInfinity\n" + ENCODED_ID + "\n" + QUERY),
+            token("3\n-1.0\n" + ENCODED_ID + "\n" + QUERY),
+            token("-1\n-1.0\n" + ENCODED_ID + "\n" + QUERY),
+            token("0\n-1.0\n!\n" + QUERY),
+            token("0\n-1.0\n_w\n" + QUERY),
+            token("0\n-1.0\n" + ENCODED_ID + "\ninvalid"),
             token("extra\nfields\nhere\n!"))) {
       assertThatThrownBy(() -> ArticleSearchCursor.parse(token))
+          .isInstanceOf(IllegalArgumentException.class);
+    }
+  }
+
+  @Test
+  void should_round_trip_opaque_legacy_article_ids_without_normalization() {
+    for (String id :
+        List.of(
+            "uuid-before-migration",
+            "42",
+            "",
+            "00000000-0000-0000-0000-00000000ABCD",
+            "legacy/with\nnewlines\tand-é-\uD83D\uDE80",
+            "\uD83D\uDE80".repeat(255))) {
+      ArticleSearchCursor cursor = new ArticleSearchCursor(0, -1.25, id, QUERY);
+      ArticleSearchCursor parsed = ArticleSearchCursor.parse(cursor.toString());
+      assertThat(parsed.getArticleId()).isEqualTo(id);
+      assertThat(parsed.getScore()).isEqualTo(-1.25);
+      parsed.validateQuery(QUERY);
+    }
+  }
+
+  @Test
+  void should_reject_positions_that_cannot_round_trip_within_the_token_limit() {
+    for (String id : new String[] {null, "\uD800", "a".repeat(16_384)}) {
+      assertThatThrownBy(() -> new ArticleSearchCursor(0, -1.25, id, QUERY))
           .isInstanceOf(IllegalArgumentException.class);
     }
   }
@@ -59,7 +89,7 @@ class ArticleSearchCursorTest {
   }
 
   private String token(String payload) {
-    return "search-v2."
+    return "search-v3."
         + Base64.getUrlEncoder()
             .withoutPadding()
             .encodeToString(payload.getBytes(StandardCharsets.UTF_8));

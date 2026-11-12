@@ -76,7 +76,8 @@ All query terms must still match somewhere in the article. Tests use adversarial
 and term frequencies, not just a single title-vs-body example.
 
 Both pagination methods use one complete order: **field tier ascending (title = 0, description = 1,
-body = 2), weighted BM25 ascending, article UUID ascending**. Filtering and ranking happen before
+body = 2), weighted BM25 ascending, article ID ascending**. IDs use SQLite's existing binary text
+order without UUID parsing or normalization, so legacy textual IDs work too. Filtering and ranking happen before
 pagination; DTO hydration preserves the selected ID order. Field-only BM25 calls with other column
 weights zero detect matching fields: a hit has a negative score, while no hit scores zero. Their
 magnitude never determines the tier.
@@ -87,15 +88,19 @@ but cannot override field priority. `articlesCount` counts matches after keyword
 and favorited filters, independently of the offset page; keyword-only counts read the FTS index.
 
 The keyword-aware `findRecentArticlesWithCursor` overload takes
-`CursorPageParameter<ArticleSearchCursor>`. Its `search-v2` tokens encode the field tier, exact BM25
-score, article UUID, and a fingerprint of the normalized keyword expression and tag/author/favorited
+`CursorPageParameter<ArticleSearchCursor>`. Its `search-v3` tokens encode the field tier, exact BM25
+score, opaque article ID, and a fingerprint of the normalized keyword expression and tag/author/favorited
 filters. Scores round-trip losslessly. Changed-query/filter or malformed cursors are rejected.
 Get tokens from the returned pager's `getStartCursor()`/`getEndCursor()` and parse with
 `ArticleSearchCursor.parse(token)`; search positions belong to the pager, not the cached article
-DTO's legacy timestamp cursor. NEXT seeks strictly after `(tier, score, UUID)`. PREV seeks strictly
+DTO's legacy timestamp cursor. NEXT seeks strictly after `(tier, score, ID)`. PREV seeks strictly
 before it, fetches in reverse order, and restores the shared ascending order before returning.
 Equal-score articles therefore do not disappear at page boundaries, including across tiers.
-Old `search-v1` tokens are rejected because they cannot address positions in field-tier order.
+IDs are individually Base64URL-encoded inside the token so Unicode, newlines, and other delimiter
+characters round-trip exactly. Tokens are capped at 16 KiB; invalid UTF-8 and positions that cannot
+round-trip within that limit are rejected. Legacy-ID migration and NEXT/PREV parity have regression
+coverage, including the non-UUID backfill fixture. Old `search-v1`/`search-v2` tokens are rejected
+because the ordering/ID encoding changed.
 
 Use the existing five-argument service overload and `CursorPageParameter<DateTime>` when there
 is no keyword (the search-specific overload requires a nonblank keyword). Non-search timestamp

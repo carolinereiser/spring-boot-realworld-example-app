@@ -26,6 +26,7 @@ import io.spring.infrastructure.repository.MyBatisUserRepository;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.stream.Collectors;
+import javax.sql.DataSource;
 import org.joda.time.DateTime;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -33,6 +34,7 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Import;
+import org.springframework.jdbc.core.JdbcTemplate;
 
 @Import({
   ArticleQueryService.class,
@@ -45,6 +47,7 @@ class ArticleSearchTest extends DbTestBase {
   @Autowired private ArticleRepository articleRepository;
   @Autowired private UserRepository userRepository;
   @Autowired private ArticleFavoriteRepository favoriteRepository;
+  @Autowired private DataSource dataSource;
 
   private User user;
   private Article titleMatch;
@@ -143,6 +146,31 @@ class ArticleSearchTest extends DbTestBase {
         .containsExactly(title.getId(), description.getId(), body.getId());
     assertThat(ids(searchCursor("violet amber", null, 10, Direction.NEXT).getData()))
         .containsExactly(title.getId(), description.getId(), body.getId());
+  }
+
+  @Test
+  void should_paginate_legacy_text_ids_in_both_directions_without_changing_offset_order() {
+    List<String> legacyIds =
+        List.of("uuid-before-migration", "42", "", "legacy/with\nnewlines-é-\uD83D\uDE80");
+    JdbcTemplate jdbc = new JdbcTemplate(dataSource);
+    for (int i = 0; i < legacyIds.size(); i++) {
+      Article article = save("Legacyneedle " + i, "summary", "content", List.of(), 0);
+      jdbc.update("UPDATE articles SET id = ? WHERE id = ?", legacyIds.get(i), article.getId());
+    }
+    ArticleDataList offset = search("legacyneedle", new Page());
+    List<String> expected = ids(offset.getArticleDatas());
+    assertThat(offset.getCount()).isEqualTo(legacyIds.size());
+    assertThat(expected).containsExactlyInAnyOrderElementsOf(legacyIds);
+    for (Direction direction : Direction.values()) {
+      ArticleSearchCursor boundary = null;
+      for (int i = 0; i < expected.size(); i++) {
+        int index = direction == Direction.NEXT ? i : expected.size() - i - 1;
+        CursorPager<ArticleData> page = searchCursor("legacyneedle", boundary, 1, direction);
+        assertThat(ids(page.getData())).containsExactly(expected.get(index));
+        boundary = ArticleSearchCursor.parse(page.getStartCursor().toString());
+      }
+      assertThat(searchCursor("legacyneedle", boundary, 1, direction).getData()).isEmpty();
+    }
   }
 
   @Test
