@@ -2,6 +2,7 @@ package io.spring.application;
 
 import static java.util.stream.Collectors.toList;
 
+import io.spring.application.data.ArticleCursorData;
 import io.spring.application.data.ArticleData;
 import io.spring.application.data.ArticleDataList;
 import io.spring.application.data.ArticleFavoriteCount;
@@ -55,23 +56,51 @@ public class ArticleQueryService {
       String tag,
       String author,
       String favoritedBy,
-      CursorPageParameter<DateTime> page,
+      CursorPageParameter<?> page,
       User currentUser) {
-    List<String> articleIds =
-        articleReadService.findArticlesWithCursor(tag, author, favoritedBy, page);
-    if (articleIds.size() == 0) {
+    CursorPageParameter<?> queryPage = page;
+    if (favoritedBy != null && page.getCursor() instanceof DateTime) {
+      // Preserve direct callers using the original timestamp-only page parameter.
+      queryPage =
+          new CursorPageParameter<>(
+              FavoriteCursor.legacy((DateTime) page.getCursor(), null),
+              page.getLimit(),
+              page.getDirection());
+    }
+    List<ArticleCursorData> selections =
+        articleReadService.findArticlesWithCursor(tag, author, favoritedBy, queryPage);
+    if (favoritedBy != null) {
+      // Trimming/reversing a cached MyBatis list would corrupt repeated favorites requests.
+      selections = new ArrayList<>(selections);
+    }
+    if (selections.size() == 0) {
       return new CursorPager<>(new ArrayList<>(), page.getDirection(), false);
     } else {
-      boolean hasExtra = articleIds.size() > page.getLimit();
+      boolean hasExtra = selections.size() > page.getLimit();
       if (hasExtra) {
-        articleIds.remove(page.getLimit());
+        selections.remove(page.getLimit());
       }
       if (!page.isNext()) {
-        Collections.reverse(articleIds);
+        Collections.reverse(selections);
       }
 
+      List<String> articleIds = selections.stream().map(ArticleCursorData::getId).collect(toList());
       List<ArticleData> articles = articleReadService.findArticles(articleIds);
       fillExtraInfo(articles, currentUser);
+      if (favoritedBy != null) {
+        boolean legacy =
+            queryPage.getCursor() instanceof FavoriteCursor
+                && ((FavoriteCursor) queryPage.getCursor()).isLegacy();
+        Map<String, ArticleData> byId = new HashMap<>();
+        articles.forEach(article -> byId.put(article.getId(), article));
+        articles =
+            selections.stream()
+                .map(
+                    selection ->
+                        byId.get(selection.getId())
+                            .withFavoriteTimestamp(selection.getFavoritedAt(), legacy))
+                .collect(toList());
+      }
 
       return new CursorPager<>(articles, page.getDirection(), hasExtra);
     }
@@ -105,6 +134,11 @@ public class ArticleQueryService {
       return new ArticleDataList(new ArrayList<>(), articleCount);
     } else {
       List<ArticleData> articles = articleReadService.findArticles(articleIds);
+      if (favoritedBy != null) {
+        Map<String, ArticleData> byId = new HashMap<>();
+        articles.forEach(article -> byId.put(article.getId(), article));
+        articles = articleIds.stream().map(byId::get).collect(toList());
+      }
       fillExtraInfo(articles, currentUser);
       return new ArticleDataList(articles, articleCount);
     }

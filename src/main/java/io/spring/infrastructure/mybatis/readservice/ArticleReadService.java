@@ -2,6 +2,7 @@ package io.spring.infrastructure.mybatis.readservice;
 
 import io.spring.application.CursorPageParameter;
 import io.spring.application.Page;
+import io.spring.application.data.ArticleCursorData;
 import io.spring.application.data.ArticleData;
 import java.util.List;
 import org.apache.ibatis.annotations.Mapper;
@@ -34,7 +35,7 @@ public interface ArticleReadService {
 
   int countFeedSize(@Param("authors") List<String> authors);
 
-  List<String> findArticlesWithCursor(
+  List<ArticleCursorData> findArticlesWithCursor(
       @Param("tag") String tag,
       @Param("author") String author,
       @Param("favoritedBy") String favoritedBy,
