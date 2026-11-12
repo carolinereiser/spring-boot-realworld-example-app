@@ -63,21 +63,35 @@ selectors are not exposed as query syntax. Punctuation is handled by the tokeniz
 as `spring-boot` becomes a phrase). Empty/whitespace-only input means no search filter; a
 punctuation-only search returns no matches. There is no substring matching or stemming.
 
-Offset search orders all matches by weighted BM25 ascending (lower is better), **before** applying
-offset/limit. `articles_fts.rank MATCH 'bm25(10.0, 5.0, 1.0)'` maps FTS5's hidden `rank` column to
-`bm25(articles_fts, 10.0, 5.0, 1.0)`. Ordering by `rank` lets FTS5 retrieve top matches natively
-instead of hydrating every matching article to sort it. Equal-score matches use FTS index order,
-not chronological order. Title, description, and body have weights 10, 5, and 1; BM25 also considers
-term frequency and document length. The hydration step preserves ranked ID order. `articlesCount`
-counts all matches after keyword, tag, author, and favorited filters, independently of the page;
-unfiltered keyword counts read the FTS index without loading article contents.
+**Both offset and cursor keyword searches use exactly the same global order:** weighted BM25
+ascending (lower is better), then article UUID ascending to resolve equal scores. Filtering and
+ranking happen **before** pagination; DTO hydration preserves the selected ID order.
+`articles_fts.rank MATCH 'bm25(10.0, 5.0, 1.0)'` maps FTS5's hidden `rank` column to
+`bm25(articles_fts, 10.0, 5.0, 1.0)`. Title, description, and body have weights 10, 5, and 1;
+these are boosts, not absolute field priorities, since BM25 also considers term frequency,
+term rarity, and document length. `articlesCount` counts all matches after keyword, tag, author,
+and favorited filters, independently of the offset page; keyword-only counts read the FTS index.
 
-The service's keyword-aware cursor overload applies the same MATCH/filter predicates but keeps
-the existing timestamp ordering: newest first, using strict `<`/`>` timestamp boundaries for
-NEXT/PREV. It does not rank across or within cursor pages, so timestamp cursors remain valid.
-As before, articles sharing a boundary timestamp cannot be individually addressed by the
-timestamp-only cursor. Existing service overloads and GraphQL callers retain their behavior;
-this change adds the keyword parameter to REST, not to the GraphQL schema.
+The keyword-aware `findRecentArticlesWithCursor` overload takes
+`CursorPageParameter<ArticleSearchCursor>`. Its `search-v1` tokens encode the exact BM25 score,
+article UUID, and a fingerprint of the normalized keyword expression and tag/author/favorited
+filters. Scores round-trip losslessly. Changed-query/filter or malformed cursors are rejected.
+Get tokens from the returned pager's `getStartCursor()`/`getEndCursor()` and parse with
+`ArticleSearchCursor.parse(token)`; search positions belong to the pager, not the cached article
+DTO's legacy timestamp cursor. NEXT seeks strictly after `(score, UUID)`. PREV seeks strictly
+before it, fetches in reverse order, and restores the shared ascending order before returning.
+Equal-score articles therefore do not disappear at page boundaries.
+
+Use the existing five-argument service overload and `CursorPageParameter<DateTime>` when there
+is no keyword (the search-specific overload requires a nonblank keyword). Non-search timestamp
+pagination and GraphQL callers retain their existing behavior and timestamp-boundary limitations.
+REST exposes keyword search through offset/limit; this change does not add GraphQL search fields
+or a REST cursor endpoint.
+
+Parity assumes the same keyword/filters and an unchanged dataset. BM25 depends on corpus-wide
+statistics, so writes can change scores even for other documents; these cursors do not retain a
+database snapshot. Restart search traversal after changes if a consistent snapshot is required.
+Cursor fingerprints detect accidental reuse across queries; tokens are not authorization tokens.
 
 ### Reproducible search benchmark
 
@@ -105,7 +119,10 @@ cold-disk measurement. The benchmark asserts p95 below 200 ms per scenario, not 
 for arbitrary hardware, concurrency, cold caches, or datasets.
 
 Scenarios cover rare/medium/broad and multi-term keywords, keyword combined separately with tag,
-author, or favorite, offset 1,000, no matches, and NEXT/PREV cursor queries at the dataset midpoint.
+author, or favorite, offset 1,000, no matches, and NEXT/PREV rank-cursor queries after the 1,000th
+ranked match for both medium and broad keywords. Cursor boundary setup and corresponding expected
+offset pages are computed outside timed calls; each measured cursor result must exactly match
+its corresponding offset page's IDs and ordering.
 Gradle writes the detailed output to `build/test-results/articleSearchBenchmark/` and the HTML
 report to `build/reports/tests/articleSearchBenchmark/`.
 
@@ -113,22 +130,24 @@ report to `build/reports/tests/articleSearchBenchmark/`.
 
 Session VM: Ubuntu/Linux 6.8, 8 vCPUs (Intel Xeon), 32 GB RAM, Java 11.0.33, SQLite 3.36.0
 via sqlite-jdbc 3.36.0.3. Default application connection settings, including the 256 MiB mmap
-limit above; no benchmark-only database tuning. All 11 scenarios passed the 200 ms p95 threshold.
+limit above; no benchmark-only database tuning. All 13 scenarios passed the 200 ms p95 threshold.
 Latency in milliseconds:
 
 | Scenario | First call | p50 | p95 | Max of 50 |
 | --- | ---: | ---: | ---: | ---: |
-| Rare keyword, 100 matches | 78.03 | 2.14 | 3.22 | 3.50 |
-| Medium keyword, 10K matches | 12.20 | 11.30 | 11.88 | 12.12 |
-| Broad keyword, 100K matches | 130.05 | 103.40 | 126.28 | 137.81 |
-| Multiple keywords | 1.88 | 1.56 | 1.74 | 10.18 |
-| Keyword + tag | 27.35 | 19.63 | 23.41 | 26.23 |
-| Keyword + author | 13.26 | 11.78 | 13.86 | 16.81 |
-| Keyword + favorite | 16.20 | 15.93 | 16.35 | 17.21 |
-| Offset 1,000 | 10.01 | 9.60 | 11.87 | 13.85 |
-| No match | 0.35 | 0.10 | 0.14 | 0.81 |
-| Cursor NEXT | 13.15 | 4.24 | 5.96 | 6.05 |
-| Cursor PREV | 3.62 | 3.51 | 4.02 | 4.78 |
+| Rare keyword, 100 matches | 74.46 | 2.48 | 3.32 | 8.17 |
+| Medium keyword, 10K matches | 16.32 | 11.14 | 15.58 | 20.46 |
+| Broad keyword, 100K matches | 160.10 | 80.83 | 88.85 | 93.70 |
+| Multiple keywords | 1.89 | 1.63 | 1.98 | 2.11 |
+| Keyword + tag | 32.58 | 28.79 | 31.49 | 33.19 |
+| Keyword + author | 8.81 | 7.24 | 8.06 | 11.01 |
+| Keyword + favorite | 22.48 | 21.39 | 22.68 | 24.13 |
+| Offset 1,000 | 12.39 | 12.10 | 14.54 | 25.68 |
+| No match | 0.34 | 0.10 | 0.12 | 0.16 |
+| Medium keyword cursor NEXT | 12.94 | 10.52 | 10.95 | 11.89 |
+| Medium keyword cursor PREV | 10.19 | 9.77 | 9.89 | 10.02 |
+| Broad keyword cursor NEXT | 89.07 | 99.34 | 101.60 | 103.56 |
+| Broad keyword cursor PREV | 77.88 | 77.53 | 129.69 | 149.76 |
 
 The initial unindexed-join implementation exceeded 3 seconds p95 even for rare matches.
 The covering tag-relation index, existence predicates, index-only keyword count, native FTS rank

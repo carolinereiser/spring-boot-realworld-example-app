@@ -5,6 +5,7 @@ import static java.util.stream.Collectors.toList;
 import io.spring.application.data.ArticleData;
 import io.spring.application.data.ArticleDataList;
 import io.spring.application.data.ArticleFavoriteCount;
+import io.spring.application.data.ArticleSearchResult;
 import io.spring.core.user.User;
 import io.spring.infrastructure.mybatis.readservice.ArticleFavoritesReadService;
 import io.spring.infrastructure.mybatis.readservice.ArticleReadService;
@@ -60,19 +61,8 @@ public class ArticleQueryService {
       String favoritedBy,
       CursorPageParameter<DateTime> page,
       User currentUser) {
-    return findRecentArticlesWithCursor(tag, author, favoritedBy, null, page, currentUser);
-  }
-
-  public CursorPager<ArticleData> findRecentArticlesWithCursor(
-      String tag,
-      String author,
-      String favoritedBy,
-      String keyword,
-      CursorPageParameter<DateTime> page,
-      User currentUser) {
     List<String> articleIds =
-        articleReadService.findArticlesWithCursor(
-            tag, author, favoritedBy, toMatchQuery(keyword), page);
+        articleReadService.findArticlesWithCursor(tag, author, favoritedBy, null, page);
     if (articleIds.size() == 0) {
       return new CursorPager<>(new ArrayList<>(), page.getDirection(), false);
     } else {
@@ -89,6 +79,46 @@ public class ArticleQueryService {
 
       return new CursorPager<>(articles, page.getDirection(), hasExtra);
     }
+  }
+
+  public CursorPager<ArticleData> findRecentArticlesWithCursor(
+      String tag,
+      String author,
+      String favoritedBy,
+      String keyword,
+      CursorPageParameter<ArticleSearchCursor> page,
+      User currentUser) {
+    String matchQuery = toMatchQuery(keyword);
+    if (matchQuery == null) {
+      throw new IllegalArgumentException("Use timestamp pagination when keyword is blank");
+    }
+    String queryKey = ArticleSearchCursor.queryKey(tag, author, favoritedBy, matchQuery);
+    if (page.getCursor() != null) {
+      page.getCursor().validateQuery(queryKey);
+    }
+    List<ArticleSearchResult> matches =
+        articleReadService.findArticlesWithSearchCursor(tag, author, favoritedBy, matchQuery, page);
+    if (matches.isEmpty()) {
+      return new CursorPager<>(new ArrayList<>(), page.getDirection(), false);
+    }
+    boolean hasExtra = matches.size() > page.getLimit();
+    if (hasExtra) {
+      matches.remove(page.getLimit());
+    }
+    if (!page.isNext()) {
+      Collections.reverse(matches);
+    }
+    List<ArticleData> articles =
+        findArticlesInOrder(matches.stream().map(ArticleSearchResult::getId).collect(toList()));
+    fillExtraInfo(articles, currentUser);
+    ArticleSearchResult first = matches.get(0);
+    ArticleSearchResult last = matches.get(matches.size() - 1);
+    return new CursorPager<>(
+        articles,
+        page.getDirection(),
+        hasExtra,
+        new ArticleSearchCursor(first.getScore(), first.getId(), queryKey),
+        new ArticleSearchCursor(last.getScore(), last.getId(), queryKey));
   }
 
   public CursorPager<ArticleData> findUserFeedWithCursor(
@@ -125,15 +155,20 @@ public class ArticleQueryService {
     if (articleIds.size() == 0) {
       return new ArticleDataList(new ArrayList<>(), articleCount);
     } else {
-      List<ArticleData> articles = articleReadService.findArticles(articleIds);
-      Map<String, Integer> positions = new HashMap<>();
-      for (int i = 0; i < articleIds.size(); i++) {
-        positions.put(articleIds.get(i), i);
-      }
-      articles.sort(Comparator.comparingInt(article -> positions.get(article.getId())));
+      List<ArticleData> articles = findArticlesInOrder(articleIds);
       fillExtraInfo(articles, currentUser);
       return new ArticleDataList(articles, articleCount);
     }
+  }
+
+  private List<ArticleData> findArticlesInOrder(List<String> articleIds) {
+    List<ArticleData> articles = articleReadService.findArticles(articleIds);
+    Map<String, Integer> positions = new HashMap<>();
+    for (int i = 0; i < articleIds.size(); i++) {
+      positions.put(articleIds.get(i), i);
+    }
+    articles.sort(Comparator.comparingInt(article -> positions.get(article.getId())));
+    return articles;
   }
 
   private String toMatchQuery(String keyword) {

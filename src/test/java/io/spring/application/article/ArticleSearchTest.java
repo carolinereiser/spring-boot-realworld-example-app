@@ -1,8 +1,10 @@
 package io.spring.application.article;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import io.spring.application.ArticleQueryService;
+import io.spring.application.ArticleSearchCursor;
 import io.spring.application.CursorPageParameter;
 import io.spring.application.CursorPager;
 import io.spring.application.CursorPager.Direction;
@@ -20,10 +22,14 @@ import io.spring.infrastructure.DbTestBase;
 import io.spring.infrastructure.repository.MyBatisArticleFavoriteRepository;
 import io.spring.infrastructure.repository.MyBatisArticleRepository;
 import io.spring.infrastructure.repository.MyBatisUserRepository;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.stream.Collectors;
 import org.joda.time.DateTime;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Import;
 
@@ -147,31 +153,154 @@ class ArticleSearchTest extends DbTestBase {
   }
 
   @Test
-  void should_use_chronological_cursor_order_in_both_directions_with_search_and_filters() {
+  void should_use_relevance_cursor_order_in_both_directions_with_search_and_filters() {
     favoriteRepository.save(new ArticleFavorite(titleMatch.getId(), user.getId()));
     favoriteRepository.save(new ArticleFavorite(bodyMatch.getId(), user.getId()));
     CursorPager<ArticleData> first = cursor(null, Direction.NEXT);
-    assertThat(first.getData()).extracting(ArticleData::getId).containsExactly(bodyMatch.getId());
+    assertThat(first.getData()).extracting(ArticleData::getId).containsExactly(titleMatch.getId());
+    assertThat(first.getStartCursor()).isInstanceOf(ArticleSearchCursor.class);
     assertThat(first.hasNext()).isTrue();
 
     CursorPager<ArticleData> second =
-        cursor(DateTimeCursor.parse(first.getEndCursor().toString()), Direction.NEXT);
-    assertThat(second.getData()).extracting(ArticleData::getId).containsExactly(titleMatch.getId());
+        cursor(ArticleSearchCursor.parse(first.getEndCursor().toString()), Direction.NEXT);
+    assertThat(second.getData()).extracting(ArticleData::getId).containsExactly(bodyMatch.getId());
     assertThat(second.hasNext()).isFalse();
     assertThat(
-            cursor(DateTimeCursor.parse(second.getEndCursor().toString()), Direction.NEXT)
+            cursor(ArticleSearchCursor.parse(second.getEndCursor().toString()), Direction.NEXT)
                 .getData())
         .isEmpty();
 
     CursorPager<ArticleData> previous =
-        cursor(DateTimeCursor.parse(second.getStartCursor().toString()), Direction.PREV);
+        cursor(ArticleSearchCursor.parse(second.getStartCursor().toString()), Direction.PREV);
     assertThat(previous.getData())
         .extracting(ArticleData::getId)
-        .containsExactly(bodyMatch.getId());
+        .containsExactly(titleMatch.getId());
     assertThat(previous.hasPrevious()).isFalse();
     CursorPager<ArticleData> last = cursor(null, Direction.PREV);
-    assertThat(last.getData()).extracting(ArticleData::getId).containsExactly(titleMatch.getId());
+    assertThat(last.getData()).extracting(ArticleData::getId).containsExactly(bodyMatch.getId());
     assertThat(last.hasPrevious()).isTrue();
+  }
+
+  @ParameterizedTest
+  @ValueSource(ints = {1, 2, 3, 10})
+  void should_return_identical_offset_and_cursor_pages_including_equal_scores(int size) {
+    Article alpha = save("Quartz alpha", "sample summary", "sample content", List.of("sqlite"), 5);
+    Article bravo = save("Quartz bravo", "sample summary", "sample content", List.of("sqlite"), 5);
+    List<String> expected = ids(search("quartz", new Page()).getArticleDatas());
+    List<String> tied = new ArrayList<>(List.of(titleMatch.getId(), alpha.getId(), bravo.getId()));
+    tied.sort(String::compareTo);
+    assertThat(expected.subList(0, 3)).containsExactlyElementsOf(tied);
+
+    List<String> offsetIds = new ArrayList<>();
+    for (int offset = 0; offset < expected.size(); offset += size) {
+      offsetIds.addAll(ids(search("quartz", new Page(offset, size)).getArticleDatas()));
+    }
+    assertThat(offsetIds).containsExactlyElementsOf(expected);
+
+    List<String> forward = new ArrayList<>();
+    ArticleSearchCursor after = null;
+    for (int offset = 0; offset < expected.size(); offset += size) {
+      CursorPager<ArticleData> page = searchCursor("quartz", after, size, Direction.NEXT);
+      List<String> pageIds = ids(page.getData());
+      assertThat(pageIds)
+          .containsExactlyElementsOf(
+              expected.subList(offset, Math.min(expected.size(), offset + size)));
+      assertThat(page.hasNext()).isEqualTo(offset + size < expected.size());
+      forward.addAll(pageIds);
+      after = ArticleSearchCursor.parse(page.getEndCursor().toString());
+    }
+    assertThat(forward).containsExactlyElementsOf(expected);
+    assertThat(searchCursor("quartz", after, size, Direction.NEXT).getData()).isEmpty();
+
+    List<String> backward = new ArrayList<>();
+    ArticleSearchCursor before = null;
+    for (int end = expected.size(); end > 0; end -= size) {
+      CursorPager<ArticleData> page = searchCursor("quartz", before, size, Direction.PREV);
+      assertThat(ids(page.getData()))
+          .containsExactlyElementsOf(expected.subList(Math.max(0, end - size), end));
+      assertThat(page.hasPrevious()).isEqualTo(end > size);
+      backward.addAll(0, ids(page.getData()));
+      before = ArticleSearchCursor.parse(page.getStartCursor().toString());
+    }
+    assertThat(backward).containsExactlyElementsOf(expected);
+    assertThat(searchCursor("quartz", before, size, Direction.PREV).getData()).isEmpty();
+
+    assertThat(queryService.findById(titleMatch.getId(), null).get().getCursor())
+        .isInstanceOf(DateTimeCursor.class);
+  }
+
+  @Test
+  void should_match_offset_pages_with_each_filter_and_all_filters_combined() {
+    favoriteRepository.save(new ArticleFavorite(titleMatch.getId(), user.getId()));
+    favoriteRepository.save(new ArticleFavorite(bodyMatch.getId(), user.getId()));
+    for (String[] filters :
+        List.of(
+            new String[] {"sqlite", null, null},
+            new String[] {null, user.getUsername(), null},
+            new String[] {null, null, user.getUsername()},
+            new String[] {"sqlite", user.getUsername(), user.getUsername()})) {
+      List<String> expected =
+          ids(
+              queryService
+                  .findRecentArticles(
+                      filters[0], filters[1], filters[2], "quartz", new Page(), null)
+                  .getArticleDatas());
+      ArticleSearchCursor after = null;
+      for (String id : expected) {
+        CursorPager<ArticleData> page =
+            queryService.findRecentArticlesWithCursor(
+                filters[0],
+                filters[1],
+                filters[2],
+                "quartz",
+                new CursorPageParameter<>(after, 1, Direction.NEXT),
+                null);
+        assertThat(ids(page.getData())).containsExactly(id);
+        after = ArticleSearchCursor.parse(page.getEndCursor().toString());
+      }
+    }
+  }
+
+  @Test
+  void should_reject_a_cursor_reused_with_different_keyword_or_filters() {
+    ArticleSearchCursor after =
+        ArticleSearchCursor.parse(
+            searchCursor("quartz", null, 1, Direction.NEXT).getEndCursor().toString());
+    assertThatThrownBy(() -> searchCursor("guide", after, 1, Direction.NEXT))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("does not match");
+    for (String[] filters :
+        List.of(
+            new String[] {"sqlite", null, null},
+            new String[] {null, user.getUsername(), null},
+            new String[] {null, null, user.getUsername()})) {
+      assertThatThrownBy(
+              () ->
+                  queryService.findRecentArticlesWithCursor(
+                      filters[0],
+                      filters[1],
+                      filters[2],
+                      "quartz",
+                      new CursorPageParameter<>(after, 1, Direction.NEXT),
+                      null))
+          .isInstanceOf(IllegalArgumentException.class)
+          .hasMessageContaining("does not match");
+    }
+    assertThatThrownBy(() -> searchCursor("  ", null, 1, Direction.NEXT))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("timestamp");
+  }
+
+  @Test
+  void should_return_empty_search_cursor_pages_for_no_matches() {
+    for (Direction direction : Direction.values()) {
+      CursorPager<ArticleData> page = searchCursor("absentword", null, 2, direction);
+      assertThat(page.getData()).isEmpty();
+      assertThat(page.getStartCursor()).isNull();
+      assertThat(page.getEndCursor()).isNull();
+      assertThat(page.hasNext()).isFalse();
+      assertThat(page.hasPrevious()).isFalse();
+    }
   }
 
   @Test
@@ -190,14 +319,24 @@ class ArticleSearchTest extends DbTestBase {
     return queryService.findRecentArticles(null, null, null, keyword, page, null);
   }
 
-  private CursorPager<ArticleData> cursor(DateTime date, Direction direction) {
+  private CursorPager<ArticleData> cursor(ArticleSearchCursor cursor, Direction direction) {
     return queryService.findRecentArticlesWithCursor(
         "sqlite",
         user.getUsername(),
         user.getUsername(),
         "quartz",
-        new CursorPageParameter<>(date, 1, direction),
+        new CursorPageParameter<>(cursor, 1, direction),
         null);
+  }
+
+  private CursorPager<ArticleData> searchCursor(
+      String keyword, ArticleSearchCursor cursor, int size, Direction direction) {
+    return queryService.findRecentArticlesWithCursor(
+        null, null, null, keyword, new CursorPageParameter<>(cursor, size, direction), null);
+  }
+
+  private List<String> ids(List<ArticleData> articles) {
+    return articles.stream().map(ArticleData::getId).collect(Collectors.toList());
   }
 
   private Article save(

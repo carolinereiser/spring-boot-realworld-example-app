@@ -3,9 +3,11 @@ package io.spring.application.article;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import io.spring.application.ArticleQueryService;
+import io.spring.application.ArticleSearchCursor;
 import io.spring.application.CursorPageParameter;
 import io.spring.application.CursorPager.Direction;
 import io.spring.application.Page;
+import io.spring.application.data.ArticleData;
 import java.nio.file.Path;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
@@ -14,6 +16,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.UUID;
+import java.util.stream.Collectors;
 import javax.sql.DataSource;
 import org.joda.time.DateTime;
 import org.junit.jupiter.api.Test;
@@ -71,36 +74,64 @@ class ArticleSearchBenchmark {
     measure("keyword plus favorite", () -> offset("sqlite", null, null, "author-0", 0, 10_000));
     measure("offset 1000", () -> offset("sqlite", null, null, null, 1_000, 10_000));
     measure("no match", () -> offset("absentword", null, null, null, 0, 0));
-    measure(
-        "cursor NEXT",
-        () ->
-            assertThat(
-                    queryService
-                        .findRecentArticlesWithCursor(
-                            null,
-                            null,
-                            null,
-                            "sqlite",
-                            new CursorPageParameter<>(
-                                START.plusSeconds(ARTICLES / 2), 20, Direction.NEXT),
-                            null)
-                        .getData())
-                .hasSize(20));
-    measure(
-        "cursor PREV",
-        () ->
-            assertThat(
-                    queryService
-                        .findRecentArticlesWithCursor(
-                            null,
-                            null,
-                            null,
-                            "sqlite",
-                            new CursorPageParameter<>(
-                                START.plusSeconds(ARTICLES / 2), 20, Direction.PREV),
-                            null)
-                        .getData())
-                .hasSize(20));
+    for (String keyword : List.of("sqlite", "article")) {
+      ArticleSearchCursor boundary =
+          ArticleSearchCursor.parse(
+              queryService
+                  .findRecentArticlesWithCursor(
+                      null,
+                      null,
+                      null,
+                      keyword,
+                      new CursorPageParameter<>(null, 1000, Direction.NEXT),
+                      null)
+                  .getEndCursor()
+                  .toString());
+      List<String> nextIds =
+          queryService
+              .findRecentArticles(null, null, null, keyword, new Page(1000, 20), null)
+              .getArticleDatas()
+              .stream()
+              .map(ArticleData::getId)
+              .collect(Collectors.toList());
+      List<String> prevIds =
+          queryService
+              .findRecentArticles(null, null, null, keyword, new Page(979, 20), null)
+              .getArticleDatas()
+              .stream()
+              .map(ArticleData::getId)
+              .collect(Collectors.toList());
+      measure(
+          keyword + " cursor NEXT",
+          () ->
+              assertThat(
+                      queryService
+                          .findRecentArticlesWithCursor(
+                              null,
+                              null,
+                              null,
+                              keyword,
+                              new CursorPageParameter<>(boundary, 20, Direction.NEXT),
+                              null)
+                          .getData())
+                  .extracting(ArticleData::getId)
+                  .containsExactlyElementsOf(nextIds));
+      measure(
+          keyword + " cursor PREV",
+          () ->
+              assertThat(
+                      queryService
+                          .findRecentArticlesWithCursor(
+                              null,
+                              null,
+                              null,
+                              keyword,
+                              new CursorPageParameter<>(boundary, 20, Direction.PREV),
+                              null)
+                          .getData())
+                  .extracting(ArticleData::getId)
+                  .containsExactlyElementsOf(prevIds));
+    }
     assertThat(slowQueries).as("scenarios exceeding 200ms p95").isEmpty();
   }
 
