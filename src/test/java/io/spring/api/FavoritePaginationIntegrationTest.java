@@ -15,6 +15,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.security.test.context.support.WithAnonymousUser;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.transaction.annotation.Transactional;
@@ -59,6 +60,7 @@ class FavoritePaginationIntegrationTest {
   }
 
   @Test
+  @WithAnonymousUser
   void graphqlArticlesAndProfileFavoritesAcceptCompositeAndLegacyCursors() {
     for (boolean profile : new boolean[] {false, true}) {
       Map<String, Object> first = connection(profile, "first: 1", null);
