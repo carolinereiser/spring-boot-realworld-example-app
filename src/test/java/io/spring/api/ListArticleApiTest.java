@@ -4,6 +4,7 @@ import static io.restassured.module.mockmvc.RestAssuredMockMvc.given;
 import static io.spring.TestHelper.articleDataFixture;
 import static java.util.Arrays.asList;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import io.restassured.module.mockmvc.RestAssuredMockMvc;
@@ -46,9 +47,33 @@ public class ListArticleApiTest extends TestWithCurrentUser {
         new ArticleDataList(
             asList(articleDataFixture("1", user), articleDataFixture("2", user)), 2);
     when(articleQueryService.findRecentArticles(
-            eq(null), eq(null), eq(null), eq(new Page(0, 20)), eq(null)))
+            eq(null), eq(null), eq(null), eq(null), eq(new Page(0, 20)), eq(null)))
         .thenReturn(articleDataList);
     RestAssuredMockMvc.when().get("/articles").prettyPeek().then().statusCode(200);
+  }
+
+  @Test
+  public void should_pass_keyword_filters_and_pagination_to_query_service() {
+    when(articleQueryService.findRecentArticles(
+            "java", "author", "reader", "sqlite search", new Page(2, 5), null))
+        .thenReturn(new ArticleDataList(asList(articleDataFixture("1", user)), 8));
+
+    given()
+        .param("keyword", "sqlite search")
+        .param("tag", "java")
+        .param("author", "author")
+        .param("favorited", "reader")
+        .param("offset", 2)
+        .param("limit", 5)
+        .when()
+        .get("/articles")
+        .then()
+        .statusCode(200)
+        .body("articlesCount", org.hamcrest.Matchers.equalTo(8))
+        .body("articles.size()", org.hamcrest.Matchers.equalTo(1));
+
+    verify(articleQueryService)
+        .findRecentArticles("java", "author", "reader", "sqlite search", new Page(2, 5), null);
   }
 
   @Test

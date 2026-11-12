@@ -17,12 +17,14 @@ public interface ArticleReadService {
       @Param("tag") String tag,
       @Param("author") String author,
       @Param("favoritedBy") String favoritedBy,
+      @Param("keyword") String keyword,
       @Param("page") Page page);
 
   int countArticle(
       @Param("tag") String tag,
       @Param("author") String author,
-      @Param("favoritedBy") String favoritedBy);
+      @Param("favoritedBy") String favoritedBy,
+      @Param("keyword") String keyword);
 
   List<ArticleData> findArticles(@Param("articleIds") List<String> articleIds);
 
@@ -38,5 +40,6 @@ public interface ArticleReadService {
       @Param("tag") String tag,
       @Param("author") String author,
       @Param("favoritedBy") String favoritedBy,
+      @Param("keyword") String keyword,
       @Param("page") CursorPageParameter page);
 }

@@ -7,6 +7,25 @@
         U.bio userBio,
         U.image userImage
     </sql>
+    <sql id="articleFilters">
+        <if test="tag != null">
+            AND T.name = #{tag}
+        </if>
+        <if test="author != null">
+            AND AU.username = #{author}
+        </if>
+        <if test="favoritedBy != null">
+            AND AFU.username = #{favoritedBy}
+        </if>
+        <if test="keyword != null">
+            AND articles_fts MATCH #{keyword}
+        </if>
+    </sql>
+    <sql id="articleSearchJoin">
+        <if test="keyword != null">
+            join articles_fts on articles_fts.rowid = A.rowid
+        </if>
+    </sql>
     <sql id="selectArticleData">
         select
         A.id articleId,
@@ -29,6 +48,7 @@
         DISTINCT(A.id) articleId, A.created_at
         from
         articles A
+        <include refid="articleSearchJoin"/>
         left join article_tags AT on A.id = AT.article_id
         left join tags T on T.id = AT.tag_id
         left join article_favorites AF on AF.article_id = A.id
@@ -47,17 +67,13 @@
     <select id="queryArticles" resultMap="articleId">
         <include refid="selectArticleIds" />
         <where>
-            <if test="tag != null">
-                T.name = #{tag}
-            </if>
-            <if test="author != null">
-                AND AU.username = #{author}
-            </if>
-            <if test="favoritedBy != null">
-                AND AFU.username = #{favoritedBy}
-            </if>
+            <include refid="articleFilters"/>
         </where>
-        order by A.created_at desc
+        order by
+        <if test="keyword != null">
+            bm25(articles_fts, 10.0, 5.0, 1.0),
+        </if>
+        A.created_at desc, A.id
         limit #{page.offset}, #{page.limit}
     </select>
     <select id="countArticle" resultType="java.lang.Integer">
@@ -65,21 +81,14 @@
         count(DISTINCT A.id)
         from
         articles A
+        <include refid="articleSearchJoin"/>
         left join article_tags AT on A.id = AT.article_id
         left join tags T on T.id = AT.tag_id
         left join article_favorites AF on AF.article_id = A.id
         left join users AU on AU.id = A.user_id
         left join users AFU on AFU.id = AF.user_id
         <where>
-            <if test="tag != null">
-                T.name = #{tag}
-            </if>
-            <if test="author != null">
-                AND AU.username = #{author}
-            </if>
-            <if test="favoritedBy != null">
-                AND AFU.username = #{favoritedBy}
-            </if>
+            <include refid="articleFilters"/>
         </where>
     </select>
     <select id="findArticles" resultMap="transfer.data.articleData">
@@ -107,15 +116,7 @@
     <select id="findArticlesWithCursor" resultType="java.lang.String">
         <include refid="selectArticleIds" />
         <where>
-            <if test="tag != null">
-                T.name = #{tag}
-            </if>
-            <if test="author != null">
-                AND AU.username = #{author}
-            </if>
-            <if test="favoritedBy != null">
-                AND AFU.username = #{favoritedBy}
-            </if>
+            <include refid="articleFilters"/>
             <if test='page.cursor != null and page.direction.name() == "NEXT"'>
                 AND A.created_at &lt; #{page.cursor}
             </if>

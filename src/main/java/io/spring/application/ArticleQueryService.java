@@ -10,12 +10,15 @@ import io.spring.infrastructure.mybatis.readservice.ArticleFavoritesReadService;
 import io.spring.infrastructure.mybatis.readservice.ArticleReadService;
 import io.spring.infrastructure.mybatis.readservice.UserRelationshipQueryService;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.stream.Collectors;
 import lombok.AllArgsConstructor;
 import org.joda.time.DateTime;
 import org.springframework.stereotype.Service;
@@ -57,8 +60,19 @@ public class ArticleQueryService {
       String favoritedBy,
       CursorPageParameter<DateTime> page,
       User currentUser) {
+    return findRecentArticlesWithCursor(tag, author, favoritedBy, null, page, currentUser);
+  }
+
+  public CursorPager<ArticleData> findRecentArticlesWithCursor(
+      String tag,
+      String author,
+      String favoritedBy,
+      String keyword,
+      CursorPageParameter<DateTime> page,
+      User currentUser) {
     List<String> articleIds =
-        articleReadService.findArticlesWithCursor(tag, author, favoritedBy, page);
+        articleReadService.findArticlesWithCursor(
+            tag, author, favoritedBy, toMatchQuery(keyword), page);
     if (articleIds.size() == 0) {
       return new CursorPager<>(new ArrayList<>(), page.getDirection(), false);
     } else {
@@ -99,15 +113,36 @@ public class ArticleQueryService {
 
   public ArticleDataList findRecentArticles(
       String tag, String author, String favoritedBy, Page page, User currentUser) {
-    List<String> articleIds = articleReadService.queryArticles(tag, author, favoritedBy, page);
-    int articleCount = articleReadService.countArticle(tag, author, favoritedBy);
+    return findRecentArticles(tag, author, favoritedBy, null, page, currentUser);
+  }
+
+  public ArticleDataList findRecentArticles(
+      String tag, String author, String favoritedBy, String keyword, Page page, User currentUser) {
+    String matchQuery = toMatchQuery(keyword);
+    List<String> articleIds =
+        articleReadService.queryArticles(tag, author, favoritedBy, matchQuery, page);
+    int articleCount = articleReadService.countArticle(tag, author, favoritedBy, matchQuery);
     if (articleIds.size() == 0) {
       return new ArticleDataList(new ArrayList<>(), articleCount);
     } else {
       List<ArticleData> articles = articleReadService.findArticles(articleIds);
+      Map<String, Integer> positions = new HashMap<>();
+      for (int i = 0; i < articleIds.size(); i++) {
+        positions.put(articleIds.get(i), i);
+      }
+      articles.sort(Comparator.comparingInt(article -> positions.get(article.getId())));
       fillExtraInfo(articles, currentUser);
       return new ArticleDataList(articles, articleCount);
     }
+  }
+
+  private String toMatchQuery(String keyword) {
+    if (keyword == null || keyword.isBlank()) {
+      return null;
+    }
+    return Arrays.stream(keyword.strip().split("\\s+"))
+        .map(term -> "\"" + term.replace("\"", "\"\"") + "\"")
+        .collect(Collectors.joining(" AND "));
   }
 
   public ArticleDataList findUserFeed(User user, Page page) {
