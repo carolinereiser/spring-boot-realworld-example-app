@@ -315,6 +315,31 @@ class ArticleSearchTest extends DbTestBase {
     assertThat(search("\" * : ( ) -", new Page()).getCount()).isZero();
   }
 
+  @ParameterizedTest
+  @ValueSource(strings = {"\u2003", "\u00a0", "\u202f", "\u0085", "\u2009"})
+  void should_normalize_unicode_whitespace_for_offset_and_cursor_search(String separator) {
+    String keyword = separator + "quartz" + separator + "guide" + separator;
+    List<String> expected = ids(search("quartz guide", new Page()).getArticleDatas());
+    ArticleDataList offset = search(keyword, new Page());
+    assertThat(offset.getCount()).isEqualTo(3);
+    assertThat(ids(offset.getArticleDatas())).containsExactlyElementsOf(expected);
+    for (Direction direction : Direction.values()) {
+      assertThat(ids(searchCursor(keyword, null, 10, direction).getData()))
+          .containsExactlyElementsOf(expected);
+    }
+
+    ArticleSearchCursor after =
+        ArticleSearchCursor.parse(
+            searchCursor(keyword, null, 1, Direction.NEXT).getEndCursor().toString());
+    assertThat(ids(searchCursor("quartz guide", after, 10, Direction.NEXT).getData()))
+        .containsExactlyElementsOf(expected.subList(1, expected.size()));
+    assertThat(search(separator, new Page()).getCount())
+        .isEqualTo(search(null, new Page()).getCount());
+    assertThatThrownBy(() -> searchCursor(separator, null, 1, Direction.NEXT))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("timestamp");
+  }
+
   private ArticleDataList search(String keyword, Page page) {
     return queryService.findRecentArticles(null, null, null, keyword, page, null);
   }

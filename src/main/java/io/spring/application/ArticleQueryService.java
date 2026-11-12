@@ -175,9 +175,12 @@ public class ArticleQueryService {
     if (keyword == null || keyword.isBlank()) {
       return null;
     }
-    return Arrays.stream(keyword.strip().split("\\s+"))
-        .map(term -> "\"" + term.replace("\"", "\"\"") + "\"")
-        .collect(Collectors.joining(" AND "));
+    String query =
+        Arrays.stream(keyword.split("(?U)\\s+"))
+            .filter(term -> !term.isEmpty())
+            .map(term -> "\"" + term.replace("\"", "\"\"") + "\"")
+            .collect(Collectors.joining(" AND "));
+    return query.isEmpty() ? null : query;
   }
 
   public ArticleDataList findUserFeed(User user, Page page) {

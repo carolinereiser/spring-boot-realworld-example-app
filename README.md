@@ -57,7 +57,7 @@ multiplication and expensive DISTINCT operations.
 Connections allow up to 256 MiB of SQLite memory-mapped reads (`PRAGMA mmap_size=268435456`),
 reducing copies during large index scans; this is a mapping limit, not an upfront memory allocation.
 
-Keywords are case-insensitive under FTS5's default `unicode61` tokenizer. Whitespace-separated
+Keywords are case-insensitive under FTS5's default `unicode61` tokenizer. Unicode whitespace-separated
 terms are ANDed; each is quoted/escaped as literal text, so operators, wildcards, and column
 selectors are not exposed as query syntax. Punctuation is handled by the tokenizer (a term such
 as `spring-boot` becomes a phrase). Empty/whitespace-only input means no search filter; a
