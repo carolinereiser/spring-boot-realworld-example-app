@@ -4,12 +4,14 @@ import static io.restassured.module.mockmvc.RestAssuredMockMvc.given;
 import static io.spring.TestHelper.articleDataFixture;
 import static java.util.Arrays.asList;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import io.restassured.module.mockmvc.RestAssuredMockMvc;
 import io.spring.JacksonCustomizations;
 import io.spring.api.security.WebSecurityConfig;
 import io.spring.application.ArticleQueryService;
+import io.spring.application.InvalidArticleKeywordException;
 import io.spring.application.Page;
 import io.spring.application.article.ArticleCommandService;
 import io.spring.application.data.ArticleDataList;
@@ -46,14 +48,52 @@ public class ListArticleApiTest extends TestWithCurrentUser {
         new ArticleDataList(
             asList(articleDataFixture("1", user), articleDataFixture("2", user)), 2);
     when(articleQueryService.findRecentArticles(
-            eq(null), eq(null), eq(null), eq(new Page(0, 20)), eq(null)))
+            eq(null), eq(null), eq(null), eq(null), eq(new Page(0, 20)), eq(null)))
         .thenReturn(articleDataList);
     RestAssuredMockMvc.when().get("/articles").prettyPeek().then().statusCode(200);
   }
 
   @Test
+  public void should_pass_keyword_filters_and_pagination_to_query_service() {
+    when(articleQueryService.findRecentArticles(
+            "java", "author", "reader", "sqlite search", new Page(2, 5), null))
+        .thenReturn(new ArticleDataList(asList(articleDataFixture("1", user)), 8));
+
+    given()
+        .param("keyword", "sqlite search")
+        .param("tag", "java")
+        .param("author", "author")
+        .param("favorited", "reader")
+        .param("offset", 2)
+        .param("limit", 5)
+        .when()
+        .get("/articles")
+        .then()
+        .statusCode(200)
+        .body("articlesCount", org.hamcrest.Matchers.equalTo(8))
+        .body("articles.size()", org.hamcrest.Matchers.equalTo(1));
+
+    verify(articleQueryService)
+        .findRecentArticles("java", "author", "reader", "sqlite search", new Page(2, 5), null);
+  }
+
+  @Test
   public void should_get_feeds_401_without_login() throws Exception {
     RestAssuredMockMvc.when().get("/articles/feed").prettyPeek().then().statusCode(401);
+  }
+
+  @Test
+  public void should_return_a_client_error_for_an_invalid_keyword() {
+    String keyword = "q".repeat(ArticleQueryService.MAX_KEYWORD_LENGTH + 1);
+    when(articleQueryService.findRecentArticles(null, null, null, keyword, new Page(), null))
+        .thenThrow(new InvalidArticleKeywordException("Keyword is too long"));
+    given()
+        .param("keyword", keyword)
+        .when()
+        .get("/articles")
+        .then()
+        .statusCode(400)
+        .body("message", org.hamcrest.Matchers.equalTo("Keyword is too long"));
   }
 
   @Test

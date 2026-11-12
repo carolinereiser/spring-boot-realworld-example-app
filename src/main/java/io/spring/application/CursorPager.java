@@ -8,9 +8,22 @@ public class CursorPager<T extends Node> {
   private List<T> data;
   private boolean next;
   private boolean previous;
+  private PageCursor startCursor;
+  private PageCursor endCursor;
 
   public CursorPager(List<T> data, Direction direction, boolean hasExtra) {
+    this(data, direction, hasExtra, null, null);
+  }
+
+  public CursorPager(
+      List<T> data,
+      Direction direction,
+      boolean hasExtra,
+      PageCursor startCursor,
+      PageCursor endCursor) {
     this.data = data;
+    this.startCursor = startCursor;
+    this.endCursor = endCursor;
 
     if (direction == Direction.NEXT) {
       this.previous = false;
@@ -30,11 +43,13 @@ public class CursorPager<T extends Node> {
   }
 
   public PageCursor getStartCursor() {
-    return data.isEmpty() ? null : data.get(0).getCursor();
+    return data.isEmpty() ? null : startCursor != null ? startCursor : data.get(0).getCursor();
   }
 
   public PageCursor getEndCursor() {
-    return data.isEmpty() ? null : data.get(data.size() - 1).getCursor();
+    return data.isEmpty()
+        ? null
+        : endCursor != null ? endCursor : data.get(data.size() - 1).getCursor();
   }
 
   public enum Direction {

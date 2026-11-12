@@ -58,6 +58,18 @@ dependencies {
 
 tasks.named('test') {
 	useJUnitPlatform()
+    exclude '**/ArticleSearchBenchmark.class'
+}
+
+tasks.register('articleSearchBenchmark', Test) {
+    description = 'Benchmark article search against 100K articles in an isolated SQLite database.'
+    group = 'verification'
+    testClassesDirs = sourceSets.test.output.classesDirs
+    classpath = sourceSets.test.runtimeClasspath
+    useJUnitPlatform()
+    include '**/ArticleSearchBenchmark.class'
+    outputs.upToDateWhen { false }
+    testLogging.showStandardStreams = true
 }
 
 tasks.named('clean') {
