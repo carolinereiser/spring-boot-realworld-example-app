@@ -25,6 +25,12 @@ class FavoriteCursorTest {
     assertEquals(123L, DateTimeCursor.parse("123").getMillis());
     assertEquals(123L, FavoriteCursor.parseFavorite("123").getFavoritedAt().getMillis());
     assertNull(FavoriteCursor.parseFavorite("123").getArticleId());
+    assertTrue(FavoriteCursor.parseFavorite("123").isLegacy());
+    FavoriteCursor legacy =
+        FavoriteCursor.parseFavorite(FavoriteCursor.legacy(new DateTime(123), "id").toString());
+    assertTrue(legacy.isLegacy());
+    assertEquals(123, legacy.getTimestamp().getMillis());
+    assertEquals("id", legacy.getArticleId());
     for (String invalid :
         new String[] {
           "",
@@ -32,7 +38,9 @@ class FavoriteCursorTest {
           "favorite:no:YWJj",
           "favorite:1:!",
           "favorite:null:",
-          "favorite:1:YWJj:extra"
+          "favorite:1:YWJj:extra",
+          "favorite-created:null:YWJj",
+          "favorite-created:1:"
         }) {
       assertThrows(IllegalArgumentException.class, () -> FavoriteCursor.parseFavorite(invalid));
     }

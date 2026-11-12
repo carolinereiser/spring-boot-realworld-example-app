@@ -30,8 +30,8 @@ public class ArticleData implements io.spring.application.Node {
 
   @JsonIgnore private DateTime favoritedAt;
 
-  // A NULL timestamp still needs a favorites cursor to page through undated legacy rows.
-  @JsonIgnore private boolean favoriteQuery;
+  // Query-specific state also handles NULL timestamps and sessions started before deployment.
+  @JsonIgnore private FavoriteCursor favoriteCursor;
 
   // Retain the existing constructor for callers that do not supply favorites metadata.
   public ArticleData(
@@ -59,10 +59,14 @@ public class ArticleData implements io.spring.application.Node {
         tagList,
         profileData,
         null,
-        false);
+        null);
   }
 
   public ArticleData withFavoriteTimestamp(DateTime timestamp) {
+    return withFavoriteTimestamp(timestamp, false);
+  }
+
+  public ArticleData withFavoriteTimestamp(DateTime timestamp, boolean legacy) {
     // Do not attach query-specific cursor state to a DTO cached by the MyBatis SqlSession.
     return new ArticleData(
         id,
@@ -77,12 +81,15 @@ public class ArticleData implements io.spring.application.Node {
         tagList,
         profileData,
         timestamp,
-        true);
+        legacy ? FavoriteCursor.legacy(createdAt, id) : new FavoriteCursor(timestamp, id));
   }
 
   @Override
   public DateTimeCursor getCursor() {
-    if (favoriteQuery || favoritedAt != null) {
+    if (favoriteCursor != null) {
+      return favoriteCursor;
+    }
+    if (favoritedAt != null) {
       return new FavoriteCursor(favoritedAt, id);
     }
     return new DateTimeCursor(updatedAt);

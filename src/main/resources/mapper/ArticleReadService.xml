@@ -130,6 +130,29 @@
                 <when test="favoritedBy != null">
                     <if test="page.cursor != null">
                         <choose>
+                            <when test="page.cursor.legacy">
+                                <choose>
+                                    <when test="page.cursor.articleId == null">
+                                        <!-- Old cursors contain updated_at without an article ID.
+                                             Include the boundary to replay ties rather than skip them.
+                                             updated_at is at least created_at, so edits can replay more rows.
+                                             For PREV there is no safe lower bound: replay in legacy order. -->
+                                        <if test="page.next">
+                                            AND A.created_at &lt;= #{page.cursor.timestamp}
+                                        </if>
+                                    </when>
+                                    <when test="page.next">
+                                        AND (A.created_at &lt; #{page.cursor.timestamp}
+                                            OR (A.created_at = #{page.cursor.timestamp}
+                                                AND A.id &lt; #{page.cursor.articleId}))
+                                    </when>
+                                    <otherwise>
+                                        AND (A.created_at > #{page.cursor.timestamp}
+                                            OR (A.created_at = #{page.cursor.timestamp}
+                                                AND A.id > #{page.cursor.articleId}))
+                                    </otherwise>
+                                </choose>
+                            </when>
                             <when test="page.cursor.favoritedAt != null">
                                 <choose>
                                     <when test="page.next">
@@ -177,6 +200,16 @@
         <choose>
             <when test="favoritedBy != null">
                 <choose>
+                    <when test="page.cursor != null and page.cursor.legacy">
+                        <choose>
+                            <when test="page.next">
+                                order by A.created_at desc, A.id desc
+                            </when>
+                            <otherwise>
+                                order by A.created_at asc, A.id asc
+                            </otherwise>
+                        </choose>
+                    </when>
                     <when test="page.next">
                         order by AF.favorited_at desc nulls last, A.id desc
                     </when>

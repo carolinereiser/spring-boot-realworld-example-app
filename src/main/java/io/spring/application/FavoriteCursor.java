@@ -4,14 +4,36 @@ import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 import org.joda.time.DateTime;
 
-/** A favorites-only cursor; plain millisecond cursors remain valid for older clients. */
+/**
+ * Favorites cursors retain their ordering mode across pages. Numeric cursors resume sessions started
+ * by the old API in article order; new sessions use favorite time.
+ */
 public class FavoriteCursor extends DateTimeCursor {
   private static final String PREFIX = "favorite:";
+  private static final String LEGACY_PREFIX = "favorite-created:";
   private final String articleId;
+  private final boolean legacy;
 
   public FavoriteCursor(DateTime favoritedAt, String articleId) {
-    super(favoritedAt);
+    this(favoritedAt, articleId, false);
+  }
+
+  private FavoriteCursor(DateTime timestamp, String articleId, boolean legacy) {
+    super(timestamp);
     this.articleId = articleId;
+    this.legacy = legacy;
+  }
+
+  public static FavoriteCursor legacy(DateTime timestamp, String articleId) {
+    return new FavoriteCursor(timestamp, articleId, true);
+  }
+
+  public boolean isLegacy() {
+    return legacy;
+  }
+
+  public DateTime getTimestamp() {
+    return getData();
   }
 
   public DateTime getFavoritedAt() {
@@ -27,7 +49,7 @@ public class FavoriteCursor extends DateTimeCursor {
     if (articleId == null) {
       return super.toString();
     }
-    return PREFIX
+    return (legacy ? LEGACY_PREFIX : PREFIX)
         + (getData() == null ? "null" : getData().getMillis())
         + ":"
         + Base64.getUrlEncoder()
@@ -39,20 +61,25 @@ public class FavoriteCursor extends DateTimeCursor {
     if (cursor == null) {
       return null;
     }
-    if (!cursor.startsWith(PREFIX)) {
-      return new FavoriteCursor(DateTimeCursor.parse(cursor), null);
+    boolean legacy = cursor.startsWith(LEGACY_PREFIX);
+    if (!legacy && !cursor.startsWith(PREFIX)) {
+      // The old API emitted updated_at, while its query ordered by created_at.
+      return legacy(DateTimeCursor.parse(cursor), null);
     }
     try {
-      String[] parts = cursor.substring(PREFIX.length()).split(":", -1);
+      String[] parts = cursor.substring((legacy ? LEGACY_PREFIX : PREFIX).length()).split(":", -1);
       if (parts.length != 2 || parts[1].isEmpty()) {
         throw new IllegalArgumentException();
       }
       DateTime timestamp = "null".equals(parts[0]) ? null : DateTimeCursor.parse(parts[0]);
+      if (legacy && timestamp == null) {
+        throw new IllegalArgumentException();
+      }
       String id = new String(Base64.getUrlDecoder().decode(parts[1]), StandardCharsets.UTF_8);
       if (id.isEmpty()) {
         throw new IllegalArgumentException();
       }
-      return new FavoriteCursor(timestamp, id);
+      return new FavoriteCursor(timestamp, id, legacy);
     } catch (IllegalArgumentException e) {
       throw new IllegalArgumentException("Invalid favorites cursor", e);
     }

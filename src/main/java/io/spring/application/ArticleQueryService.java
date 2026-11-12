@@ -63,12 +63,16 @@ public class ArticleQueryService {
       // Preserve direct callers using the original timestamp-only page parameter.
       queryPage =
           new CursorPageParameter<>(
-              new FavoriteCursor((DateTime) page.getCursor(), null),
+              FavoriteCursor.legacy((DateTime) page.getCursor(), null),
               page.getLimit(),
               page.getDirection());
     }
     List<ArticleCursorData> selections =
         articleReadService.findArticlesWithCursor(tag, author, favoritedBy, queryPage);
+    if (favoritedBy != null) {
+      // Trimming/reversing a cached MyBatis list would corrupt repeated favorites requests.
+      selections = new ArrayList<>(selections);
+    }
     if (selections.size() == 0) {
       return new CursorPager<>(new ArrayList<>(), page.getDirection(), false);
     } else {
@@ -84,6 +88,9 @@ public class ArticleQueryService {
       List<ArticleData> articles = articleReadService.findArticles(articleIds);
       fillExtraInfo(articles, currentUser);
       if (favoritedBy != null) {
+        boolean legacy =
+            queryPage.getCursor() instanceof FavoriteCursor
+                && ((FavoriteCursor) queryPage.getCursor()).isLegacy();
         Map<String, ArticleData> byId = new HashMap<>();
         articles.forEach(article -> byId.put(article.getId(), article));
         articles =
@@ -91,7 +98,7 @@ public class ArticleQueryService {
                 .map(
                     selection ->
                         byId.get(selection.getId())
-                            .withFavoriteTimestamp(selection.getFavoritedAt()))
+                            .withFavoriteTimestamp(selection.getFavoritedAt(), legacy))
                 .collect(toList());
       }
 

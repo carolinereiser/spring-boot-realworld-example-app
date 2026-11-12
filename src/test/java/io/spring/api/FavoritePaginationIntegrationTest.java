@@ -50,6 +50,7 @@ class FavoritePaginationIntegrationTest {
         .andExpect(jsonPath("$.articles[0].slug").value("c"))
         .andExpect(jsonPath("$.articles[1].slug").value("b"))
         .andExpect(jsonPath("$.articles[0].favoritedAt").doesNotExist())
+        .andExpect(jsonPath("$.articles[0].favoriteCursor").doesNotExist())
         .andExpect(jsonPath("$.articles[0].favoriteQuery").doesNotExist());
     mvc.perform(get("/articles").param("favorited", "fan").param("offset", "2"))
         .andExpect(status().isOk())

@@ -115,19 +115,21 @@ class FavoritePaginationTest extends DbTestBase {
 
   @Test
   void legacyTimestampCursorsAreStillAcceptedForFavorites() {
-    assertIds(favorites("20000", 20, Direction.NEXT).getData(), "a-new", "d-legacy");
-    assertIds(favorites("20000", 20, Direction.PREV).getData(), "b-old");
+    assertIds(favorites("3000", 20, Direction.NEXT).getData(), "a-new", "c-middle", "b-old");
+    assertIds(
+        favorites("3000", 20, Direction.PREV).getData(), "d-legacy", "a-new", "c-middle", "b-old");
     assertIds(
         service
             .findRecentArticlesWithCursor(
                 null,
                 null,
                 "fan",
-                new CursorPageParameter<>(new DateTime(20000), 20, Direction.NEXT),
+                new CursorPageParameter<>(new DateTime(3000), 20, Direction.NEXT),
                 null)
             .getData(),
         "a-new",
-        "d-legacy");
+        "c-middle",
+        "b-old");
   }
 
   @Test
