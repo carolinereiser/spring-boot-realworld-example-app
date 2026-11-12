@@ -9,6 +9,7 @@ import io.spring.application.CursorPageParameter;
 import io.spring.application.CursorPager;
 import io.spring.application.CursorPager.Direction;
 import io.spring.application.DateTimeCursor;
+import io.spring.application.InvalidArticleKeywordException;
 import io.spring.application.Page;
 import io.spring.application.data.ArticleData;
 import io.spring.application.data.ArticleDataList;
@@ -108,6 +109,40 @@ class ArticleSearchTest extends DbTestBase {
                 .findRecentArticles(null, null, "missing", "quartz", new Page(), null)
                 .getCount())
         .isZero();
+  }
+
+  @Test
+  void should_always_rank_title_before_description_before_body_despite_length_and_frequency() {
+    Article title = save("Needle", "summary", "filler ".repeat(10_000), List.of(), 0);
+    Article description = save("First", "needle ".repeat(50), "content", List.of(), 1);
+    Article longDescription = save("Second", "needle", "filler ".repeat(10_000), List.of(), 2);
+    Article body = save("Third", "summary", "needle ".repeat(100), List.of(), 3);
+    List<String> expected =
+        List.of(title.getId(), description.getId(), longDescription.getId(), body.getId());
+    assertThat(ids(search("needle", new Page()).getArticleDatas()))
+        .containsExactlyElementsOf(expected);
+    for (Direction direction : Direction.values()) {
+      ArticleSearchCursor boundary = null;
+      for (int i = 0; i < expected.size(); i++) {
+        int index = direction == Direction.NEXT ? i : expected.size() - i - 1;
+        CursorPager<ArticleData> page = searchCursor("needle", boundary, 1, direction);
+        assertThat(ids(page.getData())).containsExactly(expected.get(index));
+        boundary = ArticleSearchCursor.parse(page.getStartCursor().toString());
+        assertThat(ids(search("needle", new Page(index, 1)).getArticleDatas()))
+            .containsExactly(expected.get(index));
+      }
+    }
+  }
+
+  @Test
+  void should_use_the_highest_matching_field_for_cross_field_multi_term_search() {
+    Article title = save("Violet", "summary", "amber", List.of(), 0);
+    Article description = save("First", "violet amber", "content", List.of(), 1);
+    Article body = save("Second", "summary", "violet amber", List.of(), 2);
+    assertThat(ids(search("violet amber", new Page()).getArticleDatas()))
+        .containsExactly(title.getId(), description.getId(), body.getId());
+    assertThat(ids(searchCursor("violet amber", null, 10, Direction.NEXT).getData()))
+        .containsExactly(title.getId(), description.getId(), body.getId());
   }
 
   @Test
@@ -338,6 +373,47 @@ class ArticleSearchTest extends DbTestBase {
     assertThatThrownBy(() -> searchCursor(separator, null, 1, Direction.NEXT))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("timestamp");
+  }
+
+  @Test
+  void should_accept_long_queries_at_the_documented_limits() {
+    assertThat(search("q".repeat(ArticleQueryService.MAX_KEYWORD_LENGTH), new Page()).getCount())
+        .isZero();
+    String keyword = "quartz ".repeat(ArticleQueryService.MAX_KEYWORD_TERMS);
+    assertThat(search(keyword, new Page()).getCount()).isEqualTo(3);
+    assertThat(searchCursor(keyword, null, 10, Direction.NEXT).getData()).hasSize(3);
+  }
+
+  @Test
+  void should_reject_excessive_or_nul_containing_keywords_before_querying() {
+    for (String keyword :
+        List.of(
+            "q".repeat(ArticleQueryService.MAX_KEYWORD_LENGTH + 1),
+            "quartz ".repeat(ArticleQueryService.MAX_KEYWORD_TERMS + 1),
+            "quartz\0guide")) {
+      assertThatThrownBy(() -> search(keyword, new Page()))
+          .isInstanceOf(InvalidArticleKeywordException.class);
+      assertThatThrownBy(() -> searchCursor(keyword, null, 1, Direction.NEXT))
+          .isInstanceOf(InvalidArticleKeywordException.class);
+    }
+  }
+
+  @ParameterizedTest
+  @ValueSource(
+      strings = {
+        "quartz\"",
+        "NEAR(quartz,",
+        "title:(quartz OR",
+        "' OR 1=1 --",
+        "* ^ : - ( )",
+        "\"\"\""
+      })
+  void should_treat_malformed_fts_expressions_as_literal_text(String keyword) {
+    List<String> expected = ids(search(keyword, new Page()).getArticleDatas());
+    for (Direction direction : Direction.values()) {
+      assertThat(ids(searchCursor(keyword, null, 10, direction).getData()))
+          .containsExactlyElementsOf(expected);
+    }
   }
 
   private ArticleDataList search(String keyword, Page page) {

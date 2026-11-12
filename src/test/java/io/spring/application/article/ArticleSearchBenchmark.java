@@ -2,20 +2,37 @@ package io.spring.application.article;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.fasterxml.jackson.databind.DeserializationFeature;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.zaxxer.hikari.HikariDataSource;
 import io.spring.application.ArticleQueryService;
 import io.spring.application.ArticleSearchCursor;
 import io.spring.application.CursorPageParameter;
 import io.spring.application.CursorPager.Direction;
 import io.spring.application.Page;
 import io.spring.application.data.ArticleData;
+import java.net.URI;
+import java.net.URLEncoder;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.nio.file.Path;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.Statement;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
 import javax.sql.DataSource;
 import org.joda.time.DateTime;
@@ -23,10 +40,12 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.web.server.LocalServerPort;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 
 @SpringBootTest(
+    webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
     properties = {
       "logging.level.io.spring.infrastructure.mybatis.readservice.ArticleReadService=OFF",
       "logging.level.io.spring.infrastructure.mybatis.mapper=OFF",
@@ -41,6 +60,8 @@ class ArticleSearchBenchmark {
 
   @Autowired private DataSource dataSource;
   @Autowired private ArticleQueryService queryService;
+  @Autowired private ObjectMapper objectMapper;
+  @LocalServerPort private int port;
   private final List<String> slowQueries = new ArrayList<>();
 
   @DynamicPropertySource
@@ -132,7 +153,136 @@ class ArticleSearchBenchmark {
                   .extracting(ArticleData::getId)
                   .containsExactlyElementsOf(prevIds));
     }
-    assertThat(slowQueries).as("scenarios exceeding 200ms p95").isEmpty();
+    System.out.println(
+        "BENCHMARK datasourceMaxPoolSize="
+            + dataSource.unwrap(HikariDataSource.class).getMaximumPoolSize());
+    HttpClient client =
+        HttpClient.newBuilder()
+            .version(HttpClient.Version.HTTP_1_1)
+            .connectTimeout(Duration.ofSeconds(10))
+            .build();
+    verifyHttpInputs(client);
+    concurrentHttp(client, "quartz", 100);
+    concurrentHttp(client, "sqlite", 10_000);
+    concurrentHttp(client, "article", ARTICLES);
+    assertThat(slowQueries).as("serial scenarios exceeding 200ms p95").isEmpty();
+  }
+
+  private void concurrentHttp(HttpClient client, String keyword, int count) throws Exception {
+    int clients = 20;
+    int samplesPerClient = 10;
+    ExecutorService workers = Executors.newFixedThreadPool(clients);
+    CountDownLatch ready = new CountDownLatch(clients);
+    CountDownLatch start = new CountDownLatch(1);
+    AtomicInteger errors = new AtomicInteger();
+    AtomicReference<Throwable> firstError = new AtomicReference<>();
+    HttpRequest request =
+        HttpRequest.newBuilder(
+                URI.create(
+                    "http://localhost:" + port + "/articles?keyword=" + keyword + "&limit=20"))
+            .timeout(Duration.ofSeconds(30))
+            .GET()
+            .build();
+    List<Future<double[]>> futures = new ArrayList<>();
+    try {
+      for (int i = 0; i < clients; i++) {
+        futures.add(
+            workers.submit(
+                () -> {
+                  try {
+                    for (int warmup = 0; warmup < 2; warmup++) {
+                      assertResponse(client, request, count);
+                    }
+                  } finally {
+                    ready.countDown();
+                  }
+                  start.await();
+                  double[] milliseconds = new double[samplesPerClient];
+                  for (int sample = 0; sample < samplesPerClient; sample++) {
+                    long before = System.nanoTime();
+                    try {
+                      assertResponse(client, request, count);
+                    } catch (Exception | AssertionError exception) {
+                      errors.incrementAndGet();
+                      firstError.compareAndSet(null, exception);
+                    }
+                    milliseconds[sample] = (System.nanoTime() - before) / 1_000_000.0;
+                  }
+                  return milliseconds;
+                }));
+      }
+      assertThat(ready.await(60, TimeUnit.SECONDS)).as("concurrent clients warmed up").isTrue();
+      long wallStart = System.nanoTime();
+      start.countDown();
+      double[] milliseconds = new double[clients * samplesPerClient];
+      int index = 0;
+      for (Future<double[]> future : futures) {
+        for (double elapsed : future.get(120, TimeUnit.SECONDS)) {
+          milliseconds[index++] = elapsed;
+        }
+      }
+      double seconds = (System.nanoTime() - wallStart) / 1_000_000_000.0;
+      Arrays.sort(milliseconds);
+      System.out.printf(
+          "CONCURRENT keyword=%s clients=%d requests=%d errors=%d p50=%.2f p95=%.2f max=%.2f ms throughput=%.2f req/s%n",
+          keyword,
+          clients,
+          milliseconds.length,
+          errors.get(),
+          milliseconds[milliseconds.length / 2],
+          milliseconds[(int) Math.ceil(milliseconds.length * 0.95) - 1],
+          milliseconds[milliseconds.length - 1],
+          milliseconds.length / seconds);
+      assertThat(errors.get())
+          .as("HTTP/status/count errors for %s: %s", keyword, firstError.get())
+          .isZero();
+    } finally {
+      start.countDown();
+      workers.shutdownNow();
+      assertThat(workers.awaitTermination(30, TimeUnit.SECONDS)).isTrue();
+    }
+  }
+
+  private void assertResponse(HttpClient client, HttpRequest request, int count) throws Exception {
+    HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
+    assertThat(response.statusCode()).isEqualTo(200);
+    JsonNode json =
+        objectMapper
+            .reader()
+            .without(DeserializationFeature.UNWRAP_ROOT_VALUE)
+            .readTree(response.body());
+    assertThat(json.path("articlesCount").asInt()).isEqualTo(count);
+    assertThat(json.path("articles").size()).isEqualTo(Math.min(20, count));
+  }
+
+  private void verifyHttpInputs(HttpClient client) throws Exception {
+    for (String keyword :
+        List.of(
+            "q".repeat(ArticleQueryService.MAX_KEYWORD_LENGTH), "NEAR(quartz,", "' OR 1=1 --")) {
+      assertResponse(client, request(keyword), 0);
+    }
+    for (String keyword :
+        List.of(
+            "q".repeat(ArticleQueryService.MAX_KEYWORD_LENGTH + 1),
+            "quartz ".repeat(ArticleQueryService.MAX_KEYWORD_TERMS + 1),
+            "quartz\0guide")) {
+      assertThat(client.send(request(keyword), HttpResponse.BodyHandlers.ofString()).statusCode())
+          .isEqualTo(400);
+    }
+    System.out.println("BENCHMARK long/malformed HTTP input checks passed");
+  }
+
+  private HttpRequest request(String keyword) {
+    return HttpRequest.newBuilder(
+            URI.create(
+                "http://localhost:"
+                    + port
+                    + "/articles?keyword="
+                    + URLEncoder.encode(keyword, java.nio.charset.StandardCharsets.UTF_8)
+                    + "&limit=20"))
+        .timeout(Duration.ofSeconds(30))
+        .GET()
+        .build();
   }
 
   private void offset(

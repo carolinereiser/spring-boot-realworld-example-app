@@ -27,6 +27,8 @@ import org.springframework.stereotype.Service;
 @Service
 @AllArgsConstructor
 public class ArticleQueryService {
+  public static final int MAX_KEYWORD_LENGTH = 4096;
+  public static final int MAX_KEYWORD_TERMS = 64;
   private ArticleReadService articleReadService;
   private UserRelationshipQueryService userRelationshipQueryService;
   private ArticleFavoritesReadService articleFavoritesReadService;
@@ -117,8 +119,8 @@ public class ArticleQueryService {
         articles,
         page.getDirection(),
         hasExtra,
-        new ArticleSearchCursor(first.getScore(), first.getId(), queryKey),
-        new ArticleSearchCursor(last.getScore(), last.getId(), queryKey));
+        new ArticleSearchCursor(first.getPriority(), first.getScore(), first.getId(), queryKey),
+        new ArticleSearchCursor(last.getPriority(), last.getScore(), last.getId(), queryKey));
   }
 
   public CursorPager<ArticleData> findUserFeedWithCursor(
@@ -172,15 +174,29 @@ public class ArticleQueryService {
   }
 
   private String toMatchQuery(String keyword) {
-    if (keyword == null || keyword.isBlank()) {
+    if (keyword == null) {
       return null;
     }
-    String query =
+    if (keyword.length() > MAX_KEYWORD_LENGTH) {
+      throw new InvalidArticleKeywordException(
+          "Keyword must not exceed " + MAX_KEYWORD_LENGTH + " characters");
+    }
+    if (keyword.indexOf('\0') >= 0) {
+      throw new InvalidArticleKeywordException("Keyword must not contain NUL characters");
+    }
+    String[] terms =
         Arrays.stream(keyword.split("(?U)\\s+"))
             .filter(term -> !term.isEmpty())
+            .toArray(String[]::new);
+    if (terms.length > MAX_KEYWORD_TERMS) {
+      throw new InvalidArticleKeywordException(
+          "Keyword must not exceed " + MAX_KEYWORD_TERMS + " terms");
+    }
+    return terms.length == 0
+        ? null
+        : Arrays.stream(terms)
             .map(term -> "\"" + term.replace("\"", "\"\"") + "\"")
             .collect(Collectors.joining(" AND "));
-    return query.isEmpty() ? null : query;
   }
 
   public ArticleDataList findUserFeed(User user, Page page) {

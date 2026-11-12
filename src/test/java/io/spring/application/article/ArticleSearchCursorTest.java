@@ -16,8 +16,9 @@ class ArticleSearchCursorTest {
   @Test
   void should_round_trip_exact_score_bits_and_query_binding() {
     for (double score : new double[] {-0.00000123456789, -12.3456, -Double.MIN_VALUE, -0.0}) {
-      ArticleSearchCursor cursor = new ArticleSearchCursor(score, ID, QUERY);
+      ArticleSearchCursor cursor = new ArticleSearchCursor(1, score, ID, QUERY);
       ArticleSearchCursor parsed = ArticleSearchCursor.parse(cursor.toString());
+      assertThat(parsed.getPriority()).isEqualTo(1);
       assertThat(Double.doubleToLongBits(parsed.getScore()))
           .isEqualTo(Double.doubleToLongBits(score));
       assertThat(parsed.getArticleId()).isEqualTo(ID);
@@ -33,13 +34,16 @@ class ArticleSearchCursorTest {
         List.of(
             "",
             "123456789",
-            "search-v2.abc",
-            "search-v1.!",
-            "search-v1." + "a".repeat(513),
-            token("NaN\n" + ID + "\n" + QUERY),
-            token("Infinity\n" + ID + "\n" + QUERY),
-            token("-1.0\nnot-a-uuid\n" + QUERY),
-            token("-1.0\n" + ID + "\ninvalid"),
+            "search-v1.abc",
+            "search-v3.abc",
+            "search-v2.!",
+            "search-v2." + "a".repeat(513),
+            token("0\nNaN\n" + ID + "\n" + QUERY),
+            token("0\nInfinity\n" + ID + "\n" + QUERY),
+            token("3\n-1.0\n" + ID + "\n" + QUERY),
+            token("-1\n-1.0\n" + ID + "\n" + QUERY),
+            token("0\n-1.0\nnot-a-uuid\n" + QUERY),
+            token("0\n-1.0\n" + ID + "\ninvalid"),
             token("extra\nfields\nhere\n!"))) {
       assertThatThrownBy(() -> ArticleSearchCursor.parse(token))
           .isInstanceOf(IllegalArgumentException.class);
@@ -55,7 +59,7 @@ class ArticleSearchCursorTest {
   }
 
   private String token(String payload) {
-    return "search-v1."
+    return "search-v2."
         + Base64.getUrlEncoder()
             .withoutPadding()
             .encodeToString(payload.getBytes(StandardCharsets.UTF_8));

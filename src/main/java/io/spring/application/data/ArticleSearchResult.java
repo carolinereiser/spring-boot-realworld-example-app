@@ -7,5 +7,6 @@ import lombok.NoArgsConstructor;
 @NoArgsConstructor
 public class ArticleSearchResult {
   private String id;
+  private int priority;
   private double score;
 }

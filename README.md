@@ -62,25 +62,40 @@ terms are ANDed; each is quoted/escaped as literal text, so operators, wildcards
 selectors are not exposed as query syntax. Punctuation is handled by the tokenizer (a term such
 as `spring-boot` becomes a phrase). Empty/whitespace-only input means no search filter; a
 punctuation-only search returns no matches. There is no substring matching or stemming.
+Inputs are bounded to 4,096 UTF-16 code units and 64 Unicode-whitespace-separated terms.
+Oversized inputs, too many terms, or embedded NUL characters are rejected before SQL execution
+with HTTP 400. Malformed-looking FTS expressions otherwise remain literal text, not executable
+operators. Regression and HTTP checks cover the boundaries, quotes, incomplete expressions,
+SQL-like inputs, and Unicode whitespace.
 
-**Both offset and cursor keyword searches use exactly the same global order:** weighted BM25
-ascending (lower is better), then article UUID ascending to resolve equal scores. Filtering and
-ranking happen **before** pagination; DTO hydration preserves the selected ID order.
+**Relevance contract: title hits ALWAYS precede description-only hits, and description hits
+ALWAYS precede body-only hits. Include this strict requirement in future implementation prompts;
+BM25 weights alone do not guarantee it.** The highest matching field determines the tier:
+any matching query term in the title qualifies for title-tier, even if other terms match elsewhere.
+All query terms must still match somewhere in the article. Tests use adversarial document lengths
+and term frequencies, not just a single title-vs-body example.
+
+Both pagination methods use one complete order: **field tier ascending (title = 0, description = 1,
+body = 2), weighted BM25 ascending, article UUID ascending**. Filtering and ranking happen before
+pagination; DTO hydration preserves the selected ID order. Field-only BM25 calls with other column
+weights zero detect matching fields: a hit has a negative score, while no hit scores zero. Their
+magnitude never determines the tier.
 `articles_fts.rank MATCH 'bm25(10.0, 5.0, 1.0)'` maps FTS5's hidden `rank` column to
 `bm25(articles_fts, 10.0, 5.0, 1.0)`. Title, description, and body have weights 10, 5, and 1;
-these are boosts, not absolute field priorities, since BM25 also considers term frequency,
-term rarity, and document length. `articlesCount` counts all matches after keyword, tag, author,
+these boosts rank articles **within a tier** using term frequency, rarity, and document length,
+but cannot override field priority. `articlesCount` counts matches after keyword, tag, author,
 and favorited filters, independently of the offset page; keyword-only counts read the FTS index.
 
 The keyword-aware `findRecentArticlesWithCursor` overload takes
-`CursorPageParameter<ArticleSearchCursor>`. Its `search-v1` tokens encode the exact BM25 score,
-article UUID, and a fingerprint of the normalized keyword expression and tag/author/favorited
+`CursorPageParameter<ArticleSearchCursor>`. Its `search-v2` tokens encode the field tier, exact BM25
+score, article UUID, and a fingerprint of the normalized keyword expression and tag/author/favorited
 filters. Scores round-trip losslessly. Changed-query/filter or malformed cursors are rejected.
 Get tokens from the returned pager's `getStartCursor()`/`getEndCursor()` and parse with
 `ArticleSearchCursor.parse(token)`; search positions belong to the pager, not the cached article
-DTO's legacy timestamp cursor. NEXT seeks strictly after `(score, UUID)`. PREV seeks strictly
+DTO's legacy timestamp cursor. NEXT seeks strictly after `(tier, score, UUID)`. PREV seeks strictly
 before it, fetches in reverse order, and restores the shared ascending order before returning.
-Equal-score articles therefore do not disappear at page boundaries.
+Equal-score articles therefore do not disappear at page boundaries, including across tiers.
+Old `search-v1` tokens are rejected because they cannot address positions in field-tier order.
 
 Use the existing five-argument service overload and `CursorPageParameter<DateTime>` when there
 is no keyword (the search-specific overload requires a nonblank keyword). Non-search timestamp
@@ -115,7 +130,7 @@ HTTP/network/JSON serialization, and authenticated viewer-specific lookups. Each
 its first call separately, then 10 warmups and 50 measured calls (p50/p95/max); pages contain 20
 articles. Calls run serially without a surrounding transaction, so MyBatis sessions/caches are
 not reused between calls. OS/SQLite page caches are warm; the first call is **not** a guaranteed
-cold-disk measurement. The benchmark asserts p95 below 200 ms per scenario, not a universal SLA
+cold-disk measurement. The serial benchmark asserts p95 below 200 ms per scenario, not a universal SLA
 for arbitrary hardware, concurrency, cold caches, or datasets.
 
 Scenarios cover rare/medium/broad and multi-term keywords, keyword combined separately with tag,
@@ -123,6 +138,16 @@ author, or favorite, offset 1,000, no matches, and NEXT/PREV rank-cursor queries
 ranked match for both medium and broad keywords. Cursor boundary setup and corresponding expected
 offset pages are computed outside timed calls; each measured cursor result must exactly match
 its corresponding offset page's IDs and ordering.
+
+The same run then starts **20 concurrent HTTP/1.1 clients** against the real embedded server on
+loopback. Each client performs two warmups, waits at a common start barrier, and makes ten measured
+requests serially (200 samples per workload, 600 total). Rare, medium, and broad queries use
+`GET /articles?keyword=...&limit=20`. Timings include HTTP, JSON serialization/parsing, response
+assertions, and connection-pool waiting; the default Hikari pool has ten connections. Requests have
+a 30-second timeout. The harness checks HTTP 200, article counts/page sizes, zero errors, and reports
+p50/p95/max plus aggregate throughput. Concurrency latency is measured, **not** asserted below 200 ms.
+This is a short, closed-loop, read-only load test, not a sustained production/concurrent-write test.
+
 Gradle writes the detailed output to `build/test-results/articleSearchBenchmark/` and the HTML
 report to `build/reports/tests/articleSearchBenchmark/`.
 
@@ -130,29 +155,41 @@ report to `build/reports/tests/articleSearchBenchmark/`.
 
 Session VM: Ubuntu/Linux 6.8, 8 vCPUs (Intel Xeon), 32 GB RAM, Java 11.0.33, SQLite 3.36.0
 via sqlite-jdbc 3.36.0.3. Default application connection settings, including the 256 MiB mmap
-limit above; no benchmark-only database tuning. All 13 scenarios passed the 200 ms p95 threshold.
+limit above; no benchmark-only database tuning. All 13 serial scenarios passed the 200 ms p95 threshold.
 Latency in milliseconds:
 
 | Scenario | First call | p50 | p95 | Max of 50 |
 | --- | ---: | ---: | ---: | ---: |
-| Rare keyword, 100 matches | 74.46 | 2.48 | 3.32 | 8.17 |
-| Medium keyword, 10K matches | 16.32 | 11.14 | 15.58 | 20.46 |
-| Broad keyword, 100K matches | 160.10 | 80.83 | 88.85 | 93.70 |
-| Multiple keywords | 1.89 | 1.63 | 1.98 | 2.11 |
-| Keyword + tag | 32.58 | 28.79 | 31.49 | 33.19 |
-| Keyword + author | 8.81 | 7.24 | 8.06 | 11.01 |
-| Keyword + favorite | 22.48 | 21.39 | 22.68 | 24.13 |
-| Offset 1,000 | 12.39 | 12.10 | 14.54 | 25.68 |
-| No match | 0.34 | 0.10 | 0.12 | 0.16 |
-| Medium keyword cursor NEXT | 12.94 | 10.52 | 10.95 | 11.89 |
-| Medium keyword cursor PREV | 10.19 | 9.77 | 9.89 | 10.02 |
-| Broad keyword cursor NEXT | 89.07 | 99.34 | 101.60 | 103.56 |
-| Broad keyword cursor PREV | 77.88 | 77.53 | 129.69 | 149.76 |
+| Rare keyword, 100 matches | 65.58 | 2.10 | 2.78 | 2.99 |
+| Medium keyword, 10K matches | 16.85 | 11.69 | 14.09 | 15.68 |
+| Broad keyword, 100K matches | 97.57 | 91.52 | 95.06 | 114.87 |
+| Multiple keywords | 2.01 | 1.66 | 1.81 | 1.84 |
+| Keyword + tag | 34.37 | 29.76 | 32.14 | 33.86 |
+| Keyword + author | 9.76 | 7.60 | 7.85 | 7.92 |
+| Keyword + favorite | 24.11 | 23.55 | 35.40 | 37.52 |
+| Offset 1,000 | 14.03 | 13.73 | 16.71 | 23.24 |
+| No match | 0.39 | 0.10 | 0.12 | 0.18 |
+| Medium keyword cursor NEXT | 18.94 | 12.70 | 13.88 | 15.33 |
+| Medium keyword cursor PREV | 11.05 | 10.97 | 11.81 | 12.09 |
+| Broad keyword cursor NEXT | 107.05 | 109.78 | 114.64 | 125.45 |
+| Broad keyword cursor PREV | 90.86 | 89.17 | 94.24 | 99.36 |
+
+20-client HTTP results (200 measured requests per workload, zero errors):
+
+| Keyword / matches | p50 ms | p95 ms | Max ms | Requests/sec |
+| --- | ---: | ---: | ---: | ---: |
+| quartz / 100 | 21.33 | 42.71 | 61.19 | 785.26 |
+| sqlite / 10K | 56.28 | 97.41 | 124.84 | 305.88 |
+| article / 100K | 264.46 | 400.32 | 438.39 | 69.60 |
+
+**The broad search does not meet 200 ms p95 at 20 concurrent clients.** Do not extrapolate the
+single-reader result into a concurrency SLA. Earlier development repeats also exceeded 200 ms p95
+for broad cursor queries (up to 268.36 ms) even when other runs passed; latency varies between runs.
 
 The initial unindexed-join implementation exceeded 3 seconds p95 even for rare matches.
-The covering tag-relation index, existence predicates, index-only keyword count, native FTS rank
-ordering, and production mmap setting are important to the measured performance. These are
-single-reader, warm-cache results, not a claim about concurrent production traffic or cold disks.
+The covering tag-relation index, existence predicates, index-only keyword count, FTS ranking,
+and production mmap setting are important to the measured performance. These warm-cache tests
+do not establish performance for arbitrary concurrent production traffic or cold disks.
 
 # Getting started
 

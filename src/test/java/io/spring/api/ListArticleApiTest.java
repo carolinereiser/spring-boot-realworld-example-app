@@ -11,6 +11,7 @@ import io.restassured.module.mockmvc.RestAssuredMockMvc;
 import io.spring.JacksonCustomizations;
 import io.spring.api.security.WebSecurityConfig;
 import io.spring.application.ArticleQueryService;
+import io.spring.application.InvalidArticleKeywordException;
 import io.spring.application.Page;
 import io.spring.application.article.ArticleCommandService;
 import io.spring.application.data.ArticleDataList;
@@ -79,6 +80,20 @@ public class ListArticleApiTest extends TestWithCurrentUser {
   @Test
   public void should_get_feeds_401_without_login() throws Exception {
     RestAssuredMockMvc.when().get("/articles/feed").prettyPeek().then().statusCode(401);
+  }
+
+  @Test
+  public void should_return_a_client_error_for_an_invalid_keyword() {
+    String keyword = "q".repeat(ArticleQueryService.MAX_KEYWORD_LENGTH + 1);
+    when(articleQueryService.findRecentArticles(null, null, null, keyword, new Page(), null))
+        .thenThrow(new InvalidArticleKeywordException("Keyword is too long"));
+    given()
+        .param("keyword", keyword)
+        .when()
+        .get("/articles")
+        .then()
+        .statusCode(400)
+        .body("message", org.hamcrest.Matchers.equalTo("Keyword is too long"));
   }
 
   @Test

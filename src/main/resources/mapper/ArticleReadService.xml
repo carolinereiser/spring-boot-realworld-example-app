@@ -37,8 +37,16 @@
     <sql id="articleSearchRanking">
         AND articles_fts.rank MATCH 'bm25(10.0, 5.0, 1.0)'
     </sql>
+    <sql id="articleSearchPriority">
+        <!-- Field-only BM25 is negative for a hit and zero otherwise; its magnitude is irrelevant. -->
+        CASE
+            WHEN bm25(articles_fts, 1.0, 0.0, 0.0) &lt; 0.0 THEN 0
+            WHEN bm25(articles_fts, 0.0, 1.0, 0.0) &lt; 0.0 THEN 1
+            ELSE 2
+        END
+    </sql>
     <sql id="articleSearchOrder">
-        articles_fts.rank, A.id
+        <include refid="articleSearchPriority"/>, articles_fts.rank, A.id
     </sql>
     <sql id="selectArticleData">
         select
@@ -145,25 +153,25 @@
         limit #{page.queryLimit}
     </select>
     <select id="findArticlesWithSearchCursor" resultType="io.spring.application.data.ArticleSearchResult">
-        select A.id, articles_fts.rank score
+        select A.id, <include refid="articleSearchPriority"/> priority, articles_fts.rank score
         from articles A
         <include refid="articleSearchJoin"/>
         <where>
             <include refid="articleFilters"/>
             <include refid="articleSearchRanking"/>
             <if test='page.cursor != null and page.isNext()'>
-                AND (articles_fts.rank > #{page.cursor.score}
-                    OR (articles_fts.rank = #{page.cursor.score} AND A.id > #{page.cursor.articleId}))
+                AND (<include refid="articleSearchPriority"/>, articles_fts.rank, A.id)
+                    > (#{page.cursor.priority}, #{page.cursor.score}, #{page.cursor.articleId})
             </if>
             <if test='page.cursor != null and !page.isNext()'>
-                AND (articles_fts.rank &lt; #{page.cursor.score}
-                    OR (articles_fts.rank = #{page.cursor.score} AND A.id &lt; #{page.cursor.articleId}))
+                AND (<include refid="articleSearchPriority"/>, articles_fts.rank, A.id)
+                    &lt; (#{page.cursor.priority}, #{page.cursor.score}, #{page.cursor.articleId})
             </if>
         </where>
         order by
         <choose>
             <when test="page.isNext()"><include refid="articleSearchOrder"/></when>
-            <otherwise>articles_fts.rank desc, A.id desc</otherwise>
+            <otherwise><include refid="articleSearchPriority"/> desc, articles_fts.rank desc, A.id desc</otherwise>
         </choose>
         limit #{page.queryLimit}
     </select>

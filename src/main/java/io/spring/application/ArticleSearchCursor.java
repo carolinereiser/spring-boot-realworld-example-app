@@ -9,11 +9,13 @@ import java.util.UUID;
 import lombok.Value;
 
 public class ArticleSearchCursor extends PageCursor<ArticleSearchCursor.Position> {
-  private static final String PREFIX = "search-v1.";
+  private static final String PREFIX = "search-v2.";
 
-  public ArticleSearchCursor(double score, String articleId, String queryKey) {
-    super(new Position(score, articleId, queryKey));
-    if (!Double.isFinite(score)
+  public ArticleSearchCursor(int priority, double score, String articleId, String queryKey) {
+    super(new Position(priority, score, articleId, queryKey));
+    if (priority < 0
+        || priority > 2
+        || !Double.isFinite(score)
         || articleId == null
         || !UUID.fromString(articleId).toString().equals(articleId)
         || queryKey == null
@@ -24,6 +26,10 @@ public class ArticleSearchCursor extends PageCursor<ArticleSearchCursor.Position
 
   public double getScore() {
     return getData().getScore();
+  }
+
+  public int getPriority() {
+    return getData().getPriority();
   }
 
   public String getArticleId() {
@@ -39,7 +45,13 @@ public class ArticleSearchCursor extends PageCursor<ArticleSearchCursor.Position
   @Override
   public String toString() {
     String payload =
-        Double.toHexString(getScore()) + "\n" + getArticleId() + "\n" + getData().getQueryKey();
+        getPriority()
+            + "\n"
+            + Double.toHexString(getScore())
+            + "\n"
+            + getArticleId()
+            + "\n"
+            + getData().getQueryKey();
     return PREFIX
         + Base64.getUrlEncoder()
             .withoutPadding()
@@ -59,10 +71,11 @@ public class ArticleSearchCursor extends PageCursor<ArticleSearchCursor.Position
               Base64.getUrlDecoder().decode(token.substring(PREFIX.length())),
               StandardCharsets.UTF_8);
       String[] parts = payload.split("\n", -1);
-      if (parts.length != 3) {
+      if (parts.length != 4) {
         throw new IllegalArgumentException();
       }
-      return new ArticleSearchCursor(Double.parseDouble(parts[0]), parts[1], parts[2]);
+      return new ArticleSearchCursor(
+          Integer.parseInt(parts[0]), Double.parseDouble(parts[1]), parts[2], parts[3]);
     } catch (IllegalArgumentException exception) {
       throw new IllegalArgumentException("Invalid article search cursor", exception);
     }
@@ -72,7 +85,7 @@ public class ArticleSearchCursor extends PageCursor<ArticleSearchCursor.Position
     try {
       MessageDigest digest = MessageDigest.getInstance("SHA-256");
       for (String part :
-          new String[] {"bm25:10,5,1;id:asc", tag, author, favoritedBy, matchQuery}) {
+          new String[] {"field:any:asc;bm25:10,5,1;id:asc", tag, author, favoritedBy, matchQuery}) {
         byte[] bytes = part == null ? new byte[0] : part.getBytes(StandardCharsets.UTF_8);
         digest.update(ByteBuffer.allocate(4).putInt(part == null ? -1 : bytes.length).array());
         digest.update(bytes);
@@ -85,6 +98,7 @@ public class ArticleSearchCursor extends PageCursor<ArticleSearchCursor.Position
 
   @Value
   public static class Position {
+    int priority;
     double score;
     String articleId;
     String queryKey;
